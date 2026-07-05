@@ -1,0 +1,782 @@
+/* =====================================================================
+ * ASCII PORTAL  —  a browser Portal clone rendered entirely in text.
+ *
+ * DESIGN NOTE (stated up front, per the brief): the world is a 2.5D
+ * side-view platformer on a character grid, NOT a first-person raycaster.
+ * This cleanly supports gravity, momentum-preserving portals, trampolines,
+ * water and cube-on-plate puzzles, and gets to a *fun, working* build fast.
+ * The "holding the gun" feel comes from a HUD viewmodel + an in-world barrel
+ * that tracks your aim.
+ *
+ * Coordinate system: 1 unit == 1 character cell. +x right, +y DOWN (screen
+ * coordinates). Physics runs on floats at a fixed timestep; rendering rounds
+ * to the nearest cell.
+ *
+ * Sections:
+ *   1. constants / tiles
+ *   2. level loading
+ *   3. physics (AABB vs. grid, water, trampolines, plates, doors)
+ *   4. portals (firing raycast + momentum-preserving teleport)
+ *   5. input
+ *   6. renderer (shaded ASCII buffer + sprites)
+ *   7. game flow (overlays, level transitions) + main loop
+ * ===================================================================== */
+
+"use strict";
+
+/* ------------------------------ 1. constants ----------------------- */
+
+const CELL = 1;
+const GRAVITY   = 58;     // cells / s^2
+const MOVE_SPD  = 15;     // horizontal run speed
+const JUMP_VEL  = 24;     // initial jump velocity (up is negative)
+const TRAMP_VEL = 40;     // trampoline launch velocity
+const MAX_FALL  = 60;     // terminal velocity
+const DT        = 1 / 120;// physics step
+
+const PLAYER_W = 1.7, PLAYER_H = 2.7;
+const CUBE_W   = 2.2, CUBE_H = 2.2;
+
+const PORTAL_HALF = 1.6;  // half-length of a portal mouth, in cells
+const FIRE_SPEED  = 220;  // raycast marching resolution helper
+const TP_COOLDOWN = 0.12; // seconds a body is immune after teleporting
+const GRAB_REACH  = 4.0;
+
+// tile helpers
+const isSolidTile = (t) => t === "#" || t === "X" || t === "^" || t === "_" || t === "D";
+const isPortalable = (t) => t === "#";
+
+/* ------------------------------ 2. level state --------------------- */
+
+const state = {
+  levelIndex: 0,
+  grid: [],          // array of char arrays [row][col]
+  W: 0, H: 0,
+  hasGun: false,
+  player: null,
+  cube: null,
+  carrying: false,
+  grabCooldown: 0,
+  portals: [null, null],   // [blue, orange]  {cx,cy,nx,ny,tx,ty,holes:Set}
+  plateCells: [],          // [{x,y}]
+  doorCells: [],           // [{x,y}]
+  doorOpen: false,
+  frame: 0,
+  mouse: { cx: 0, cy: 0, active: false },
+  aim: { x: 1, y: 0 },
+  facing: 1,
+  fireFlash: 0,            // >0 briefly after firing
+  fireWhich: 0,            // 0 = none, 1 = blue, 2 = orange
+  mode: "start",           // start | play | loading | reward | won
+  overlayTimer: 0,
+  deathFlash: 0,
+};
+
+const screenEl  = document.getElementById("screen");
+const overlayEl  = document.getElementById("overlay");
+const overlayTxt = document.getElementById("overlayText");
+const gunViewEl  = document.getElementById("gunView");
+
+function tileAt(cx, cy) {
+  if (cy < 0 || cy >= state.H || cx < 0 || cx >= state.W) return "X"; // OOB = solid
+  return state.grid[cy][cx];
+}
+
+function loadLevel(i) {
+  const def = LEVELS[i];
+  state.levelIndex = i;
+  // normalize width
+  const w = Math.max(...def.rows.map((r) => r.length));
+  state.grid = def.rows.map((r) => {
+    const arr = r.split("");
+    while (arr.length < w) arr.push(" ");
+    return arr;
+  });
+  state.W = w;
+  state.H = state.grid.length;
+  state.hasGun = state.hasGun || def.gun; // once you have the gun you keep it
+  if (i === 0) state.hasGun = false;
+
+  state.portals = [null, null];
+  state.plateCells = [];
+  state.doorCells = [];
+  state.doorOpen = false;
+  state.carrying = false;
+  state.grabCooldown = 0;
+  state.frame = 0;
+
+  // scan special tiles, spawn entities, replace markers with air
+  let px = 2, py = 2, cx = 4, cy = 2;
+  for (let y = 0; y < state.H; y++) {
+    for (let x = 0; x < state.W; x++) {
+      const t = state.grid[y][x];
+      if (t === "P") { px = x; py = y; state.grid[y][x] = " "; }
+      else if (t === "C") { cx = x; cy = y; state.grid[y][x] = " "; }
+      else if (t === "_") state.plateCells.push({ x, y });
+      else if (t === "D") {
+        // single-cell door (at standing height) so it blocks the player when
+        // closed but never clips the portal-firing lane above it. It is drawn
+        // as a taller decorative frame at render time.
+        state.doorCells.push({ x, y });
+      }
+    }
+  }
+
+  // place player / cube resting on whatever is below their marker
+  state.player = makeBody(px + 0.5 - PLAYER_W / 2, py + 1 - PLAYER_H, PLAYER_W, PLAYER_H);
+  state.cube   = makeBody(cx + 0.5 - CUBE_W / 2,  cy + 1 - CUBE_H,  CUBE_W,  CUBE_H);
+  settle(state.player);
+  settle(state.cube);
+
+  updateHud();
+}
+
+function makeBody(x, y, w, h) {
+  return { x, y, w, h, vx: 0, vy: 0, onGround: false,
+           pcx: x + w / 2, pcy: y + h / 2, tpCd: 0 };
+}
+
+// drop a freshly-spawned body onto the nearest floor below it
+function settle(b) {
+  for (let i = 0; i < 200; i++) {
+    b.y += 0.25;
+    if (bodyHitsSolid(b, false)) { b.y -= 0.25; break; }
+  }
+}
+
+/* ------------------------------ 3. physics ------------------------- */
+
+// true if a solid tile overlaps the body. If usePortalHoles, cells punched
+// out by a portal mouth are treated as passable.
+function bodyHitsSolid(b, usePortalHoles) {
+  const x0 = Math.floor(b.x + 0.001), x1 = Math.floor(b.x + b.w - 0.001);
+  const y0 = Math.floor(b.y + 0.001), y1 = Math.floor(b.y + b.h - 0.001);
+  for (let y = y0; y <= y1; y++)
+    for (let x = x0; x <= x1; x++)
+      if (isSolidCell(x, y, usePortalHoles)) return true;
+  return false;
+}
+
+function isSolidCell(x, y, usePortalHoles) {
+  const t = tileAt(x, y);
+  if (t === "D") { if (state.doorOpen) return false; }
+  else if (!isSolidTile(t)) return false;
+  if (usePortalHoles && portalHoleAt(x, y)) return false;
+  return true;
+}
+
+function portalHoleAt(x, y) {
+  for (const p of state.portals)
+    if (p && p.holes.has(x + "," + y)) return true;
+  return false;
+}
+
+// move a body one step with axis-separated AABB collision
+function moveBody(b, dt) {
+  b.pcx = b.x + b.w / 2;
+  b.pcy = b.y + b.h / 2;
+
+  b.vy += GRAVITY * dt;
+  if (b.vy > MAX_FALL) b.vy = MAX_FALL;
+
+  // ---- X axis ----
+  b.x += b.vx * dt;
+  if (b.vx > 0) {
+    const cx = Math.floor(b.x + b.w - 0.001);
+    for (let cy = Math.floor(b.y + 0.001); cy <= Math.floor(b.y + b.h - 0.001); cy++)
+      if (isSolidCell(cx, cy, true)) { b.x = cx - b.w; b.vx = 0; break; }
+  } else if (b.vx < 0) {
+    const cx = Math.floor(b.x + 0.001);
+    for (let cy = Math.floor(b.y + 0.001); cy <= Math.floor(b.y + b.h - 0.001); cy++)
+      if (isSolidCell(cx, cy, true)) { b.x = cx + 1; b.vx = 0; break; }
+  }
+
+  // ---- Y axis ----
+  b.onGround = false;
+  b.y += b.vy * dt;
+  if (b.vy > 0) { // falling
+    const cy = Math.floor(b.y + b.h - 0.001);
+    for (let cx = Math.floor(b.x + 0.001); cx <= Math.floor(b.x + b.w - 0.001); cx++) {
+      if (isSolidCell(cx, cy, true)) {
+        b.y = cy - b.h;
+        if (tileAt(cx, cy) === "^") b.vy = -TRAMP_VEL;   // bounce!
+        else { b.vy = 0; b.onGround = true; }
+        break;
+      }
+    }
+  } else if (b.vy < 0) { // rising
+    const cy = Math.floor(b.y + 0.001);
+    for (let cx = Math.floor(b.x + 0.001); cx <= Math.floor(b.x + b.w - 0.001); cx++)
+      if (isSolidCell(cx, cy, true)) { b.y = cy + 1; b.vy = 0; break; }
+  }
+
+  if (b.tpCd > 0) b.tpCd -= dt;
+  tryTeleport(b);
+}
+
+// is any cell overlapping this body deadly water?
+function inWater(b) {
+  const x0 = Math.floor(b.x + 0.001), x1 = Math.floor(b.x + b.w - 0.001);
+  const y0 = Math.floor(b.y + 0.001), y1 = Math.floor(b.y + b.h - 0.001);
+  for (let y = y0; y <= y1; y++)
+    for (let x = x0; x <= x1; x++)
+      if (tileAt(x, y) === "~") return true;
+  return false;
+}
+
+// cube resting on a plate?
+function platePressed() {
+  const c = state.cube;
+  if (state.carrying) return false;
+  for (const p of state.plateCells) {
+    const overX = c.x < p.x + 1 && c.x + c.w > p.x;
+    const bottom = c.y + c.h;
+    if (overX && bottom > p.y - 0.35 && bottom < p.y + 0.6) return true;
+  }
+  return false;
+}
+
+/* ------------------------------ 4. portals ------------------------- */
+
+const rot = (x, y, a) => {
+  const c = Math.cos(a), s = Math.sin(a);
+  return { x: x * c - y * s, y: x * s + y * c };
+};
+
+// Fire from origin along unit dir; place portal `which` (0 blue / 1 orange).
+function firePortal(which, ox, oy, dx, dy) {
+  const len = Math.hypot(dx, dy) || 1;
+  dx /= len; dy /= len;
+  let lastX = Math.floor(ox), lastY = Math.floor(oy);
+  const step = 0.12;
+  for (let t = 0; t < 120; t += step) {
+    const x = ox + dx * t, y = oy + dy * t;
+    const cx = Math.floor(x), cy = Math.floor(y);
+    if (cx === lastX && cy === lastY) continue;
+    const tile = tileAt(cx, cy);
+    if (tile === "X" || tile === "D") return false;          // blocked, no portal
+    if (isPortalable(tile)) {
+      // entered a concrete cell from (lastX,lastY): find the crossed face
+      let nx = 0, ny = 0;
+      if (cx !== lastX && cy === lastY) nx = lastX - cx; // vertical face
+      else if (cy !== lastY && cx === lastX) ny = lastY - cy; // horizontal face
+      else { // diagonal: prefer the axis whose neighbor is open
+        if (!isPortalable(tileAt(lastX, cy))) ny = lastY - cy;
+        else nx = lastX - cx;
+      }
+      return placePortal(which, cx, cy, nx, ny, x, y);
+    }
+    lastX = cx; lastY = cy;
+  }
+  return false;
+}
+
+// place a portal of length 3 centered near (hitX,hitY) on the face given by
+// normal (nx,ny), backed by concrete cells behind the surface.
+function placePortal(which, wallX, wallY, nx, ny, hitX, hitY) {
+  const tx = -ny, ty = nx;               // tangent along the wall
+  // surface position (the plane the mouth sits on)
+  let surfX, surfY;
+  if (nx !== 0) { surfX = nx > 0 ? wallX + 1 : wallX; surfY = hitY; }
+  else          { surfY = ny > 0 ? wallY + 1 : wallY; surfX = hitX; }
+
+  // center along tangent, clamped so all 3 backing cells are concrete
+  let cAlong = (nx !== 0) ? surfY : surfX;
+  const backOf = (along) => {
+    // integer cell just behind the surface at tangent position `along`
+    if (nx !== 0) return { x: wallX, y: Math.floor(along) };
+    return { x: Math.floor(along), y: wallY };
+  };
+  // try the hit position, then nudge to fit three concrete cells
+  const fits = (center) => {
+    for (let d = -1; d <= 1; d++) {
+      const b = backOf(center + d);
+      if (!isPortalable(tileAt(b.x, b.y))) return false;
+    }
+    return true;
+  };
+  let center = cAlong;
+  if (!fits(center)) {
+    let placed = false;
+    for (const off of [0, 1, -1, 2, -2]) {
+      if (fits(center + off)) { center += off; placed = true; break; }
+    }
+    if (!placed) return false;
+  }
+
+  const cx = (nx !== 0) ? surfX : center;
+  const cy = (nx !== 0) ? center : surfY;
+
+  // holes: the backing wall cells the mouth punches through
+  const holes = new Set();
+  for (let d = -1; d <= 1; d++) {
+    const b = backOf(center + d);
+    holes.add(b.x + "," + b.y);
+  }
+
+  state.portals[which] = { cx, cy, nx, ny, tx, ty, holes };
+  updateHud();
+  return true;
+}
+
+// teleport a body if its center just crossed a portal's surface inward
+function tryTeleport(b) {
+  if (b.tpCd > 0) return;
+  const cxNow = b.x + b.w / 2, cyNow = b.y + b.h / 2;
+  for (let i = 0; i < 2; i++) {
+    const A = state.portals[i], B = state.portals[1 - i];
+    if (!A || !B) continue;
+    const dPrev = (b.pcx - A.cx) * A.nx + (b.pcy - A.cy) * A.ny;
+    const dNow  = (cxNow - A.cx) * A.nx + (cyNow - A.cy) * A.ny;
+    const tNow  = (cxNow - A.cx) * A.tx + (cyNow - A.cy) * A.ty;
+    // moving inward (from the air side toward/through the surface)
+    if (dPrev > 0 && dNow <= 0.15 && Math.abs(tNow) <= PORTAL_HALF + 0.6) {
+      teleport(b, A, B);
+      return;
+    }
+  }
+}
+
+function teleport(b, A, B) {
+  const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  const rel = { x: cx - A.cx, y: cy - A.cy };
+  // rotation that turns the incoming direction (-A.normal) into B's normal
+  const aIn = Math.atan2(-A.ny, -A.nx);
+  const aOut = Math.atan2(B.ny, B.nx);
+  const dth = aOut - aIn;
+
+  const nr = rot(rel.x, rel.y, dth);
+  const nv = rot(b.vx, b.vy, dth);
+  const push = (b.w + b.h) / 4 + 0.7;
+
+  const ncx = B.cx + nr.x + B.nx * push;
+  const ncy = B.cy + nr.y + B.ny * push;
+  b.x = ncx - b.w / 2;
+  b.y = ncy - b.h / 2;
+  b.vx = nv.x; b.vy = nv.y;
+  b.tpCd = TP_COOLDOWN;
+  b.pcx = b.x + b.w / 2; b.pcy = b.y + b.h / 2;
+}
+
+/* ------------------------------ 5. input --------------------------- */
+
+const keys = {};
+window.addEventListener("keydown", (e) => {
+  const k = e.key.toLowerCase();
+  if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) e.preventDefault();
+
+  if (state.mode === "start") { startGame(); return; }
+  if (state.mode !== "play") return;
+
+  if (k === "e") tryGrab();
+  if (k === "r") loadLevel(state.levelIndex);
+  keys[k] = true;
+});
+window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+
+function updateMouseCell(e) {
+  const rect = screenEl.getBoundingClientRect();
+  const padL = 10, padT = 10; // matches CSS padding
+  const cw = (rect.width - padL * 2) / state.W;
+  const ch = (rect.height - padT * 2) / state.H;
+  state.mouse.cx = (e.clientX - rect.left - padL) / cw;
+  state.mouse.cy = (e.clientY - rect.top - padT) / ch;
+  state.mouse.active = true;
+}
+screenEl.addEventListener("mousemove", updateMouseCell);
+
+screenEl.addEventListener("contextmenu", (e) => e.preventDefault());
+screenEl.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  screenEl.focus();
+  if (state.mode === "start") { startGame(); return; }
+  if (state.mode !== "play" || !state.hasGun) return;
+  updateMouseCell(e);
+  const p = state.player;
+  const ox = p.x + p.w / 2, oy = p.y + p.h / 2;
+  let dx = state.aim.x, dy = state.aim.y;
+  const which = e.button === 2 ? 1 : 0;
+  const ok = firePortal(which, ox + dx * 1.2, oy + dy * 1.2, dx, dy);
+  if (ok) { state.fireFlash = 0.18; state.fireWhich = which + 1; }
+});
+
+function tryGrab() {
+  if (state.grabCooldown > 0) return;
+  const p = state.player, c = state.cube;
+  if (state.carrying) {
+    // drop in front
+    state.carrying = false;
+    c.vx = state.facing * 5 + p.vx * 0.4;
+    c.vy = -2;
+    state.grabCooldown = 0.25;
+  } else {
+    const dx = (c.x + c.w / 2) - (p.x + p.w / 2);
+    const dy = (c.y + c.h / 2) - (p.y + p.h / 2);
+    if (Math.hypot(dx, dy) <= GRAB_REACH) {
+      state.carrying = true;
+      state.grabCooldown = 0.25;
+    }
+  }
+}
+
+/* ------------------------------ 6. renderer ------------------------ */
+
+// character buffer: chars[r][c], cls[r][c]
+let chars = [], cls = [];
+function resetBuffer() {
+  chars = Array.from({ length: state.H }, () => Array(state.W).fill(" "));
+  cls   = Array.from({ length: state.H }, () => Array(state.W).fill("bg"));
+}
+function put(x, y, ch, c) {
+  x = Math.round(x); y = Math.round(y);
+  if (x < 0 || x >= state.W || y < 0 || y >= state.H) return;
+  chars[y][x] = ch; cls[y][x] = c;
+}
+
+const WALL_SHADE = "▓▒░▓▓▒";
+function drawWorld() {
+  const f = state.frame;
+  for (let y = 0; y < state.H; y++) {
+    for (let x = 0; x < state.W; x++) {
+      const t = state.grid[y][x];
+      if (t === "#") {
+        const h = (x * 7 + y * 13) % WALL_SHADE.length;
+        chars[y][x] = WALL_SHADE[h];
+        cls[y][x] = (h % 3 === 1) ? "wall2" : "wall";
+      } else if (t === "X") {
+        if (x % 4 === 0 && y % 2 === 0) { chars[y][x] = "●"; cls[y][x] = "rivet"; }
+        else { chars[y][x] = ((x + y) % 2 === 0) ? "▚" : "▞"; cls[y][x] = "metal"; }
+      } else if (t === "~") {
+        const w = "≈~≈-‗~";
+        chars[y][x] = w[(x + Math.floor(f / 6)) % w.length];
+        cls[y][x] = "water";
+      } else if (t === "^") {
+        chars[y][x] = (Math.floor(f / 6) % 2 === 0) ? "^" : "▲";
+        cls[y][x] = "tramp";
+      } else if (t === "_") {
+        const on = state.doorOpen;
+        chars[y][x] = on ? "▀" : "▄";
+        cls[y][x] = on ? "plateOn" : "plate";
+      } else if (t === "D") {
+        if (state.doorOpen) { chars[y][x] = "░"; cls[y][x] = "doorOpen"; }
+        else { chars[y][x] = ((x + y) % 2 === 0) ? "▤" : "▥"; cls[y][x] = "door"; }
+      } else {
+        // air: sparse depth dots
+        if ((x * 13 + y * 7) % 31 === 0) { chars[y][x] = "·"; cls[y][x] = "bg"; }
+        else { chars[y][x] = " "; cls[y][x] = "bg"; }
+      }
+    }
+  }
+}
+
+function drawPortals() {
+  const styles = ["pa", "pb"];
+  for (let i = 0; i < 2; i++) {
+    const p = state.portals[i];
+    if (!p) continue;
+    const c = styles[i];
+    const vertical = p.nx !== 0;         // portal lies on a vertical wall face
+    // three rim cells along the tangent form an oval mouth
+    for (let d = -1; d <= 1; d++) {
+      const mx = p.cx + p.tx * d, my = p.cy + p.ty * d;
+      let ch;
+      if (vertical) ch = d === 0 ? "(" : d < 0 ? "╭" : "╰"; // tall mouth
+      else          ch = d === 0 ? "~" : d < 0 ? "╭" : "╮"; // wide mouth
+      put(mx, my, ch, c);
+    }
+    put(p.cx, p.cy, "◉", c);             // bright core
+  }
+}
+
+// multi-line sprite blitter
+function blit(x, y, rows, c) {
+  for (let r = 0; r < rows.length; r++)
+    for (let k = 0; k < rows[r].length; k++) {
+      const ch = rows[r][k];
+      if (ch !== " ") put(x + k, y + r, ch, c);
+    }
+}
+
+function drawCube(withHold) {
+  const c = state.cube;
+  const x = Math.round(c.x + c.w / 2 - 1.5);
+  const y = Math.round(c.y + c.h / 2 - 1.5);
+  blit(x, y, ["┌─┐", "│ │", "└─┘"], "cube");
+  put(x + 1, y + 1, "❤", "heart");
+}
+
+function drawPlayer() {
+  const p = state.player;
+  const x = Math.round(p.x + p.w / 2 - 1.5);
+  const y = Math.round(p.y);
+  // arms raised when carrying the cube, otherwise out to the sides
+  const art = state.carrying ? ["╲O╱", " █ ", "╱ ╲"]
+                             : [" O ", "┤█├", "╱ ╲"];
+  blit(x, y, art, "player");
+
+  // in-world gun barrel tracking the aim (only if armed and not carrying)
+  if (state.hasGun) {
+    const ox = p.x + p.w / 2, oy = p.y + p.h / 2 - 0.3;
+    const ax = state.aim.x, ay = state.aim.y;
+    for (let s = 1.4; s <= 2.4; s += 1) {
+      const gx = ox + ax * s, gy = oy + ay * s;
+      const ch = barrelChar(ax, ay, s >= 2.2);
+      const c = state.fireFlash > 0 ? "flash" : "gun";
+      put(gx, gy, ch, c);
+    }
+  }
+}
+
+function barrelChar(ax, ay, tip) {
+  const ang = Math.atan2(ay, ax);
+  const a = ((ang * 180) / Math.PI + 360) % 180;
+  let base;
+  if (a < 22 || a >= 158) base = "═";
+  else if (a < 68) base = ay > 0 ? "╲" : "╱";
+  else if (a < 112) base = "║";
+  else base = ay > 0 ? "╱" : "╲";
+  if (tip) {
+    if (a < 22 || a >= 158) return ax >= 0 ? "►" : "◄";
+    if (a < 112) return ay > 0 ? "▼" : "▲";
+    return ay > 0 ? "▼" : "▲";
+  }
+  return base;
+}
+
+function render() {
+  resetBuffer();
+  drawWorld();
+  drawPortals();
+  drawCube();
+  drawPlayer();
+
+  // compose HTML with run-length grouping per row
+  let html = "";
+  for (let y = 0; y < state.H; y++) {
+    let line = "", curCls = cls[y][0], run = "";
+    for (let x = 0; x < state.W; x++) {
+      const c = cls[y][x];
+      if (c !== curCls) { line += span(curCls, run); run = ""; curCls = c; }
+      run += esc(chars[y][x]);
+    }
+    line += span(curCls, run);
+    html += line + "\n";
+  }
+  if (state.deathFlash > 0) {
+    screenEl.style.filter = "hue-rotate(-40deg) brightness(1.4)";
+  } else {
+    screenEl.style.filter = "";
+  }
+  screenEl.innerHTML = html;
+}
+
+const span = (c, s) => s ? `<span class="t-${c}">${s}</span>` : "";
+const esc = (ch) => ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : ch === "&" ? "&amp;" : ch;
+
+/* ---- side-panel HUD ---- */
+function updateHud() {
+  const def = LEVELS[state.levelIndex];
+  document.getElementById("hudLevel").textContent =
+    "CHAMBER " + String(state.levelIndex + 1).padStart(2, "0");
+  document.getElementById("hudName").innerHTML = "&nbsp;" + def.name.replace(/^Chamber \d+ — /, "");
+  document.getElementById("hudHint").textContent = def.hint;
+  const b = state.portals[0] ? "SET" : "—";
+  const o = state.portals[1] ? "SET" : "—";
+  document.getElementById("hudPortals").innerHTML =
+    `PORTALS: <span style="color:var(--pa)">${b}</span> / <span style="color:var(--pb)">${o}</span>`;
+  document.getElementById("hudCube").textContent = "CUBE: " + (state.carrying ? "carried" : "free");
+  document.getElementById("hudPlate").textContent = "PLATE: " + (state.doorOpen ? "PRESSED — door open" : "open");
+}
+
+const GUN_ART = [
+  "        ______",
+  "       /  __  \\____",
+  "   ___/  /  \\  \\   \\___",
+  "  |___   | () |   ___  >==",
+  "      \\  \\ __ /  /   \\/",
+  "       \\__|  |__/",
+  "          |==|",
+  "          |  |",
+  "         /____\\",
+];
+function drawGunView() {
+  if (!state.hasGun) { gunViewEl.textContent = "  ( acquired in Chamber 02 )"; gunViewEl.className = "gunView"; return; }
+  gunViewEl.textContent = GUN_ART.join("\n");
+  gunViewEl.className = "gunView" + (state.fireFlash > 0 ? (state.fireWhich === 1 ? " fa" : " fb") : "");
+}
+
+/* ------------------------------ 7. game flow ----------------------- */
+
+function showOverlay(text) { overlayTxt.textContent = text; overlayEl.classList.remove("hidden"); }
+function hideOverlay() { overlayEl.classList.add("hidden"); }
+
+const TITLE = [
+  "",
+  "     █████ ███████ ██████ ██ ██     ██████   ██████  ██████ ████████ █████ ██     ",
+  "     ██  █ ██      ██     ██ ██     ██   ██ ██    ██ ██   ██   ██    ██  █ ██     ",
+  "     █████ ███████ ██     ██ ██     ██████  ██    ██ ██████    ██    █████ ██     ",
+  "     ██  █      ██ ██     ██ ██     ██      ██    ██ ██  ██    ██    ██  █ ██     ",
+  "     ██  █ ███████ ██████ ██ ██████ ██       ██████  ██   ██   ██    ██  █ ██████ ",
+  "",
+  "                  A P E R T U R E   S C I E N C E   —   1 0   C H A M B E R S",
+  "",
+  "        Move A/D · Jump W/Space · Aim with the mouse · L-Click blue portal",
+  "        R-Click orange portal · E grab/drop the Weighted Cube · R restart",
+  "",
+  "                     « click here or press any key to begin »",
+  "",
+];
+
+function startGame() {
+  state.mode = "play";
+  state.hasGun = false;
+  loadLevel(0);
+  hideOverlay();
+  screenEl.focus();
+}
+
+function completeLevel() {
+  const wasFirst = state.levelIndex === 0;
+  if (state.levelIndex >= LEVELS.length - 1) {
+    state.mode = "won";
+    showOverlay([
+      "", "", "        ╔══════════════════════════════════════╗",
+      "        ║   ALL TEST CHAMBERS COMPLETE             ║",
+      "        ║                                          ║",
+      "        ║   The cake, regrettably, is a lie.       ║",
+      "        ║                                          ║",
+      "        ║   press R-key... just kidding. Reload    ║",
+      "        ║   the page to run the gauntlet again.    ║",
+      "        ╚══════════════════════════════════════╝",
+    ].join("\n"));
+    return;
+  }
+  if (wasFirst) {
+    state.hasGun = true;
+    state.mode = "reward";
+    state.overlayTimer = 3.0;
+    showOverlay([
+      "", "",
+      "        ┌───────────────────────────────────────┐",
+      "        │   HANDHELD PORTAL DEVICE  ACQUIRED     │",
+      "        │                                        │",
+      "        │      ______                            │",
+      "        │     /  __  \\____                       │",
+      "        │  __/  / () \\  \\  \\___                   │",
+      "        │ |__   |    |   ___ >==   speedy thing   │",
+      "        │    \\__| __ |__/          goes in...     │",
+      "        │                                        │",
+      "        │   L-Click = BLUE   R-Click = ORANGE    │",
+      "        └───────────────────────────────────────┘",
+    ].join("\n"));
+  } else {
+    state.mode = "loading";
+    state.overlayTimer = 1.6;
+  }
+}
+
+function advance() {
+  loadLevel(state.levelIndex + 1);
+  state.mode = "play";
+  hideOverlay();
+}
+
+function killPlayer() {
+  state.deathFlash = 0.35;
+  loadLevel(state.levelIndex);
+}
+
+/* ------------------------------ main loop -------------------------- */
+
+let acc = 0, last = performance.now();
+
+function frame(now) {
+  let dtReal = (now - last) / 1000;
+  if (dtReal > 0.1) dtReal = 0.1;
+  last = now;
+
+  // aim from mouse
+  if (state.player) {
+    const p = state.player;
+    const ox = p.x + p.w / 2, oy = p.y + p.h / 2;
+    let ax = state.mouse.cx - ox, ay = state.mouse.cy - oy;
+    if (!state.mouse.active || (ax === 0 && ay === 0)) { ax = state.facing; ay = 0; }
+    const l = Math.hypot(ax, ay) || 1;
+    state.aim.x = ax / l; state.aim.y = ay / l;
+  }
+
+  if (state.mode === "play") {
+    acc += dtReal;
+    let steps = 0;
+    while (acc >= DT && steps < 20) { step(DT); acc -= DT; steps++; }
+  } else if (state.mode === "loading" || state.mode === "reward") {
+    state.overlayTimer -= dtReal;
+    if (state.overlayTimer <= 0) advance();
+  }
+
+  if (state.fireFlash > 0) state.fireFlash -= dtReal;
+  if (state.deathFlash > 0) state.deathFlash -= dtReal;
+
+  if (state.mode !== "start" && state.mode !== "won" && state.grid.length) render();
+  drawGunView();
+  state.frame++;
+  requestAnimationFrame(frame);
+}
+
+function step(dt) {
+  const p = state.player;
+  if (state.grabCooldown > 0) state.grabCooldown -= dt;
+
+  // horizontal control
+  let move = 0;
+  if (keys["a"] || keys["arrowleft"]) move -= 1;
+  if (keys["d"] || keys["arrowright"]) move += 1;
+  if (move !== 0) state.facing = move;
+  p.vx = move * MOVE_SPD;
+
+  // jump
+  if ((keys["w"] || keys[" "] || keys["arrowup"]) && p.onGround) {
+    p.vy = -JUMP_VEL; p.onGround = false;
+  }
+
+  moveBody(p, dt);
+
+  // cube: carried follows the player, else free physics
+  const c = state.cube;
+  if (state.carrying) {
+    const tx = p.x + p.w / 2 + state.facing * 1.6 - c.w / 2;
+    const ty = p.y - 0.2;
+    c.vx = 0; c.vy = 0;
+    c.x = tx; c.y = ty;
+    c.pcx = c.x + c.w / 2; c.pcy = c.y + c.h / 2;
+  } else {
+    moveBody(c, dt);
+  }
+
+  // hazards
+  if (inWater(p) || p.y > state.H + 3) { killPlayer(); return; }
+  if (!state.carrying && (inWater(c) || c.y > state.H + 3)) {
+    // lost cube -> restart chamber
+    killPlayer(); return;
+  }
+
+  // plate / door
+  const pressed = platePressed();
+  if (pressed !== state.doorOpen) { state.doorOpen = pressed; updateHud(); }
+
+  // win: player overlaps an open door
+  if (state.doorOpen) {
+    for (const d of state.doorCells) {
+      if (p.x < d.x + 1 && p.x + p.w > d.x && p.y < d.y + 1 && p.y + p.h > d.y) {
+        completeLevel();
+        return;
+      }
+    }
+  }
+  updateHud();
+}
+
+/* ------------------------------ boot ------------------------------- */
+showOverlay(TITLE.join("\n"));
+drawGunView();
+requestAnimationFrame(frame);

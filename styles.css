@@ -1,0 +1,123 @@
+:root{
+  --bg:#05070a;
+  --fg:#c8d6cf;
+  --dim:#2f4038;
+  --wall:#7d7466;      /* concrete */
+  --wall2:#5c5648;
+  --metal:#6f7d8c;     /* non-portalable metal */
+  --rivet:#aab6c2;
+  --water:#2f7fb0;
+  --tramp:#d089e0;
+  --plate:#8a7a3a;
+  --plateOn:#f2d24a;
+  --door:#7a5230;
+  --doorOpen:#254036;
+  --cube:#c9a15a;
+  --cubeHeart:#e86a6a;
+  --player:#8fe3c2;
+  --pa:#3fb7ff;        /* blue portal */
+  --pb:#ff9a3c;        /* orange portal */
+  --gun:#dfe7ee;
+  --flash:#ffffff;
+}
+
+*{ box-sizing:border-box; }
+
+html,body{
+  margin:0; height:100%;
+  background:radial-gradient(ellipse at 50% 30%, #0b1016 0%, #04060a 70%, #010203 100%);
+  color:var(--fg);
+  font-family:"SFMono-Regular",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+}
+
+#app{
+  height:100%;
+  display:flex;
+  gap:14px;
+  padding:14px;
+  align-items:stretch;
+  justify-content:center;
+}
+
+#stage{ position:relative; flex:0 0 auto; }
+
+#screen{
+  margin:0;
+  font-size:15px;
+  line-height:15px;
+  letter-spacing:0px;
+  white-space:pre;
+  background:#03050a;
+  border:1px solid #16241d;
+  border-radius:6px;
+  padding:10px;
+  box-shadow:0 0 40px rgba(20,60,45,.25), inset 0 0 60px rgba(0,0,0,.6);
+  text-shadow:0 0 4px rgba(120,220,180,.15);
+  outline:none;
+  cursor:crosshair;
+  user-select:none;
+}
+
+/* token colors */
+.t-bg{color:var(--dim);}
+.t-wall{color:var(--wall);}
+.t-wall2{color:var(--wall2);}
+.t-metal{color:var(--metal);}
+.t-rivet{color:var(--rivet);}
+.t-water{color:var(--water);}
+.t-tramp{color:var(--tramp);}
+.t-plate{color:var(--plate);}
+.t-plateOn{color:var(--plateOn); text-shadow:0 0 8px var(--plateOn);}
+.t-door{color:var(--door);}
+.t-doorOpen{color:var(--doorOpen);}
+.t-cube{color:var(--cube);}
+.t-heart{color:var(--cubeHeart); text-shadow:0 0 6px var(--cubeHeart);}
+.t-player{color:var(--player); text-shadow:0 0 6px rgba(140,240,200,.5);}
+.t-pa{color:var(--pa); text-shadow:0 0 8px var(--pa);}
+.t-pb{color:var(--pb); text-shadow:0 0 8px var(--pb);}
+.t-gun{color:var(--gun);}
+.t-flash{color:var(--flash); text-shadow:0 0 10px #fff;}
+
+/* overlay */
+.overlay{
+  position:absolute; inset:0;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(2,4,8,.82);
+  border-radius:6px;
+  text-align:center;
+  transition:opacity .25s ease;
+}
+.overlay.hidden{ opacity:0; pointer-events:none; }
+#overlayText{
+  margin:0; font-size:15px; line-height:16px;
+  color:#bfe9d4; text-shadow:0 0 8px rgba(120,220,180,.35);
+}
+
+/* side panel */
+#panel{
+  flex:0 0 250px;
+  display:flex; flex-direction:column; gap:12px;
+  color:#9fb4aa;
+  font-size:12px;
+}
+.panelBox{
+  border:1px solid #16281f;
+  border-radius:6px;
+  background:linear-gradient(180deg, rgba(10,18,14,.6), rgba(4,8,6,.6));
+  padding:10px 12px;
+}
+.panelTitle{
+  font-size:10px; letter-spacing:2px; color:#4f7d68;
+  border-bottom:1px solid #16281f; padding-bottom:5px; margin-bottom:7px;
+}
+.hudLine{ color:#bfe0cf; margin:2px 0; }
+.hudSub{ color:#6f8c7f; font-size:11px; }
+.ctrl{ margin:3px 0; color:#8aa89b; }
+.ctrl b{ display:inline-block; min-width:78px; color:#e2f3ea; }
+.hudHint{ color:#cfe6d8; line-height:1.45; font-size:12px; }
+.gunView{
+  margin:0 0 8px; font-size:12px; line-height:12px;
+  color:var(--gun); text-shadow:0 0 6px rgba(200,220,240,.25);
+}
+.gunView.fa{ color:var(--pa); text-shadow:0 0 10px var(--pa); }
+.gunView.fb{ color:var(--pb); text-shadow:0 0 10px var(--pb); }

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ASCII PORTAL — Aperture Science</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="stage">
+      <pre id="screen" tabindex="0"></pre>
+
+      <!-- Start / loading / reward / death overlays are drawn into #overlay -->
+      <div id="overlay" class="overlay">
+        <pre id="overlayText"></pre>
+      </div>
+    </div>
+
+    <aside id="panel">
+      <div class="panelBox">
+        <div class="panelTitle">APERTURE SCIENCE</div>
+        <div id="hudLevel" class="hudLine">CHAMBER 00</div>
+        <div id="hudName"  class="hudSub">&nbsp;</div>
+      </div>
+
+      <div class="panelBox">
+        <div class="panelTitle">HANDHELD PORTAL DEVICE</div>
+        <pre id="gunView" class="gunView"></pre>
+        <div id="hudPortals" class="hudLine">PORTALS: — / —</div>
+        <div id="hudCube"    class="hudLine">CUBE: free</div>
+        <div id="hudPlate"   class="hudLine">PLATE: open</div>
+      </div>
+
+      <div class="panelBox">
+        <div class="panelTitle">CONTROLS</div>
+        <div class="ctrl"><b>A&nbsp;D&nbsp;/&nbsp;&larr;&nbsp;&rarr;</b> move</div>
+        <div class="ctrl"><b>W&nbsp;/&nbsp;Space</b> jump</div>
+        <div class="ctrl"><b>Mouse</b> aim</div>
+        <div class="ctrl"><b>L-Click</b> blue portal</div>
+        <div class="ctrl"><b>R-Click</b> orange portal</div>
+        <div class="ctrl"><b>E</b> grab / drop cube</div>
+        <div class="ctrl"><b>R</b> restart chamber</div>
+      </div>
+
+      <div class="panelBox hint">
+        <div class="panelTitle">OBJECTIVE</div>
+        <div id="hudHint" class="hudHint">&nbsp;</div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="levels.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
