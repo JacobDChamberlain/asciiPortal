@@ -26,22 +26,32 @@
 
 /* ------------------------------ 1. constants ----------------------- */
 
+// SCALE blows every chamber (and the player/cube/physics with it) up by this
+// factor. Because velocities AND gravity scale by SCALE while timing is left
+// alone, trajectories keep the same shape — so the game plays identically,
+// just twice as big, with room for a proper multi-cell door.
+const SCALE = 2;
+
 const CELL = 1;
-const GRAVITY   = 58;     // cells / s^2
-const MOVE_SPD  = 15;     // horizontal run speed
-const JUMP_VEL  = 24;     // initial jump velocity (up is negative)
-const TRAMP_VEL = 40;     // trampoline launch velocity
-const MAX_FALL  = 60;     // terminal velocity
-const GROUND_FRICTION = 14; // how fast grounded free objects shed sideways speed
+const GRAVITY   = 58 * SCALE;     // cells / s^2
+const MOVE_SPD  = 15 * SCALE;     // horizontal run speed
+const JUMP_VEL  = 24 * SCALE;     // initial jump velocity (up is negative)
+const TRAMP_VEL = 40 * SCALE;     // trampoline launch velocity
+const MAX_FALL  = 60 * SCALE;     // terminal velocity
+const GROUND_FRICTION = 14; // rate (1/time) — unscaled
 const DT        = 1 / 120;// physics step
 
-const PLAYER_W = 1.7, PLAYER_H = 2.7;
-const CUBE_W   = 2.2, CUBE_H = 2.2;
+const PLAYER_W = 1.7 * SCALE, PLAYER_H = 2.7 * SCALE;
+const CUBE_W   = 2.2 * SCALE, CUBE_H = 2.2 * SCALE;
 
-const PORTAL_HALF = 1.6;  // half-length of a portal mouth, in cells
-const FIRE_SPEED  = 220;  // raycast marching resolution helper
+// portal mouth reaches PHALF_CELLS cells to each side of its center, so the
+// opening is 2*PHALF_CELLS+1 cells — tall enough for the (scaled) player to
+// pass through.
+const PHALF_CELLS = Math.max(1, Math.round(1.6 * SCALE));
 const TP_COOLDOWN = 0.12; // seconds a body is immune after teleporting
-const GRAB_REACH  = 4.0;
+const GRAB_REACH  = 4.0 * SCALE;
+
+const DOOR_W = 6, DOOR_H = 8;     // exit door size in (scaled) cells
 
 // tile helpers
 const isSolidTile = (t) => t === "#" || t === "X" || t === "^" || t === "_" || t === "D";
@@ -86,51 +96,87 @@ function tileAt(cx, cy) {
 function loadLevel(i) {
   const def = LEVELS[i];
   state.levelIndex = i;
-  // normalize width
-  const w = Math.max(...def.rows.map((r) => r.length));
-  state.grid = def.rows.map((r) => {
-    const arr = r.split("");
-    while (arr.length < w) arr.push(" ");
-    return arr;
+
+  // parse + pad the authored (unscaled) grid
+  const w0 = Math.max(...def.rows.map((r) => r.length));
+  const base = def.rows.map((r) => {
+    const a = r.split("");
+    while (a.length < w0) a.push(" ");
+    return a;
   });
-  state.W = w;
-  state.H = state.grid.length;
+  const H0 = base.length;
+
+  // pull markers out in authored coords, then clear them (plate stays as a
+  // terrain tile; the door is rebuilt as a big multi-cell door below)
+  let pOrig = { x: 2, y: 2 }, cOrig = { x: 4, y: 2 }, doorOrig = null;
+  for (let y = 0; y < H0; y++)
+    for (let x = 0; x < w0; x++) {
+      const t = base[y][x];
+      if (t === "P") { pOrig = { x, y }; base[y][x] = " "; }
+      else if (t === "C") { cOrig = { x, y }; base[y][x] = " "; }
+      else if (t === "D") { doorOrig = { x, y }; base[y][x] = " "; }
+    }
+
+  // blow the grid up SCALE x SCALE
+  const W = w0 * SCALE, H = H0 * SCALE;
+  const grid = Array.from({ length: H }, () => Array(W).fill(" "));
+  for (let y = 0; y < H0; y++)
+    for (let x = 0; x < w0; x++) {
+      const t = base[y][x];
+      for (let dy = 0; dy < SCALE; dy++)
+        for (let dx = 0; dx < SCALE; dx++) grid[y * SCALE + dy][x * SCALE + dx] = t;
+    }
+  state.grid = grid; state.W = W; state.H = H;
+
   state.hasGun = state.hasGun || def.gun; // once you have the gun you keep it
   if (i === 0) state.hasGun = false;
-
   state.portals = [null, null];
   state.plateCells = [];
   state.doorCells = [];
+  state.doorRect = null;
   state.doorOpen = false;
   state.carrying = false;
   state.grabCooldown = 0;
   state.frame = 0;
 
-  // scan special tiles, spawn entities, replace markers with air
-  let px = 2, py = 2, cx = 4, cy = 2;
-  for (let y = 0; y < state.H; y++) {
-    for (let x = 0; x < state.W; x++) {
-      const t = state.grid[y][x];
-      if (t === "P") { px = x; py = y; state.grid[y][x] = " "; }
-      else if (t === "C") { cx = x; cy = y; state.grid[y][x] = " "; }
-      else if (t === "_") state.plateCells.push({ x, y });
-      else if (t === "D") {
-        // single-cell door (at standing height) so it blocks the player when
-        // closed but never clips the portal-firing lane above it. It is drawn
-        // as a taller decorative frame at render time.
-        state.doorCells.push({ x, y });
-      }
-    }
-  }
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++)
+      if (grid[y][x] === "_") state.plateCells.push({ x, y });
 
-  // place player / cube resting on whatever is below their marker
-  state.player = makeBody(px + 0.5 - PLAYER_W / 2, py + 1 - PLAYER_H, PLAYER_W, PLAYER_H);
-  state.cube   = makeBody(cx + 0.5 - CUBE_W / 2,  cy + 1 - CUBE_H,  CUBE_W,  CUBE_H);
+  if (doorOrig) buildDoor(doorOrig);
+
+  // spawn entities (scaled coords), resting on the floor beneath their marker
+  const px = pOrig.x * SCALE + SCALE / 2, py = (pOrig.y + 1) * SCALE;
+  const cxp = cOrig.x * SCALE + SCALE / 2, cyp = (cOrig.y + 1) * SCALE;
+  state.player = makeBody(px - PLAYER_W / 2, py - PLAYER_H, PLAYER_W, PLAYER_H);
+  state.cube   = makeBody(cxp - CUBE_W / 2, cyp - CUBE_H, CUBE_W, CUBE_H);
   state.cube.friction = true;
   settle(state.player);
   settle(state.cube);
 
   updateHud();
+}
+
+// Build a DOOR_W x DOOR_H framed door standing on the floor at the marker.
+// Its air cells become solid 'D' tiles (blocking until the plate is pressed);
+// the rect is stored so it can be drawn as a proper door sprite.
+function buildDoor(doorOrig) {
+  const cxCenter = doorOrig.x * SCALE + SCALE / 2;
+  const floorTop = (doorOrig.y + 1) * SCALE;         // door stands on this
+  let left = Math.round(cxCenter - DOOR_W / 2);
+  left = Math.max(1, Math.min(state.W - 1 - DOOR_W, left));
+  let h = DOOR_H;
+  while (h > 6 && floorTop - h < 1) h--;             // clamp if it hits the ceiling
+  const top = floorTop - h;
+  state.doorRect = { x: left, y: top, w: DOOR_W, h };
+  for (let yy = 0; yy < h; yy++)
+    for (let xx = 0; xx < DOOR_W; xx++) {
+      const gx = left + xx, gy = top + yy;
+      if (state.grid[gy] && state.grid[gy][gx] === " ") {
+        state.grid[gy][gx] = "D";
+        state.doorCells.push({ x: gx, y: gy });
+      }
+    }
 }
 
 function makeBody(x, y, w, h) {
@@ -241,7 +287,7 @@ function platePressed() {
   for (const p of state.plateCells) {
     const overX = c.x < p.x + 1 && c.x + c.w > p.x;
     const bottom = c.y + c.h;
-    if (overX && bottom > p.y - 0.35 && bottom < p.y + 0.6) return true;
+    if (overX && bottom > p.y - 0.35 * SCALE && bottom < p.y + 0.6 * SCALE) return true;
   }
   return false;
 }
@@ -290,16 +336,16 @@ function placePortal(which, wallX, wallY, nx, ny, hitX, hitY) {
   if (nx !== 0) { surfX = nx > 0 ? wallX + 1 : wallX; surfY = hitY; }
   else          { surfY = ny > 0 ? wallY + 1 : wallY; surfX = hitX; }
 
-  // center along tangent, clamped so all 3 backing cells are concrete
+  // center along tangent, clamped so all backing cells are concrete
   let cAlong = (nx !== 0) ? surfY : surfX;
   const backOf = (along) => {
     // integer cell just behind the surface at tangent position `along`
     if (nx !== 0) return { x: wallX, y: Math.floor(along) };
     return { x: Math.floor(along), y: wallY };
   };
-  // try the hit position, then nudge to fit three concrete cells
+  // try the hit position, then nudge until the whole mouth is backed by concrete
   const fits = (center) => {
-    for (let d = -1; d <= 1; d++) {
+    for (let d = -PHALF_CELLS; d <= PHALF_CELLS; d++) {
       const b = backOf(center + d);
       if (!isPortalable(tileAt(b.x, b.y))) return false;
     }
@@ -308,8 +354,9 @@ function placePortal(which, wallX, wallY, nx, ny, hitX, hitY) {
   let center = cAlong;
   if (!fits(center)) {
     let placed = false;
-    for (const off of [0, 1, -1, 2, -2]) {
+    for (let off = 0; off <= PHALF_CELLS + 1; off++) {
       if (fits(center + off)) { center += off; placed = true; break; }
+      if (fits(center - off)) { center -= off; placed = true; break; }
     }
     if (!placed) return false;
   }
@@ -317,11 +364,15 @@ function placePortal(which, wallX, wallY, nx, ny, hitX, hitY) {
   const cx = (nx !== 0) ? surfX : center;
   const cy = (nx !== 0) ? center : surfY;
 
-  // holes: the backing wall cells the mouth punches through
+  // holes: the wall cells the mouth punches through. Punch SCALE+1 cells deep
+  // (opposite the normal) so a body can push its centre all the way to the
+  // surface plane through a thick, scaled-up wall.
   const holes = new Set();
-  for (let d = -1; d <= 1; d++) {
+  const depth = SCALE + 1;
+  for (let d = -PHALF_CELLS; d <= PHALF_CELLS; d++) {
     const b = backOf(center + d);
-    holes.add(b.x + "," + b.y);
+    for (let k = 0; k < depth; k++)
+      holes.add((b.x - nx * k) + "," + (b.y - ny * k));
   }
 
   state.portals[which] = { cx, cy, nx, ny, tx, ty, holes };
@@ -340,7 +391,7 @@ function tryTeleport(b) {
     const dNow  = (cxNow - A.cx) * A.nx + (cyNow - A.cy) * A.ny;
     const tNow  = (cxNow - A.cx) * A.tx + (cyNow - A.cy) * A.ty;
     // moving inward (from the air side toward/through the surface)
-    if (dPrev > 0 && dNow <= 0.15 && Math.abs(tNow) <= PORTAL_HALF + 0.6) {
+    if (dPrev > 0 && dNow <= 0.3 && Math.abs(tNow) <= PHALF_CELLS + 0.5) {
       teleport(b, A, B);
       return;
     }
@@ -357,7 +408,7 @@ function teleport(b, A, B) {
 
   const nr = rot(rel.x, rel.y, dth);
   const nv = rot(b.vx, b.vy, dth);
-  const push = (b.w + b.h) / 4 + 0.7;
+  const push = (b.w + b.h) / 4 + 0.7 * SCALE;
 
   const ncx = B.cx + nr.x + B.nx * push;
   const ncy = B.cy + nr.y + B.ny * push;
@@ -413,7 +464,7 @@ function fire(which) {
   const p = state.player;
   const ox = p.x + p.w / 2, oy = p.y + p.h / 2;
   const a = currentAim();
-  const ok = firePortal(which, ox + a.x * 1.2, oy + a.y * 1.2, a.x, a.y);
+  const ok = firePortal(which, ox + a.x * 1.2 * SCALE, oy + a.y * 1.2 * SCALE, a.x, a.y);
   if (ok) { state.fireFlash = 0.18; state.fireWhich = which + 1; }
 }
 
@@ -487,8 +538,7 @@ function drawWorld() {
         chars[y][x] = on ? "▀" : "▄";
         cls[y][x] = on ? "plateOn" : "plate";
       } else if (t === "D") {
-        if (state.doorOpen) { chars[y][x] = "░"; cls[y][x] = "doorOpen"; }
-        else { chars[y][x] = ((x + y) % 2 === 0) ? "▤" : "▥"; cls[y][x] = "door"; }
+        chars[y][x] = " "; cls[y][x] = "bg";   // painted by drawDoor()
       } else {
         // air: sparse depth dots
         if ((x * 13 + y * 7) % 31 === 0) { chars[y][x] = "·"; cls[y][x] = "bg"; }
@@ -505,15 +555,15 @@ function drawPortals() {
     if (!p) continue;
     const c = styles[i];
     const vertical = p.nx !== 0;         // portal lies on a vertical wall face
-    // three rim cells along the tangent form an oval mouth
-    for (let d = -1; d <= 1; d++) {
+    // an oval mouth spanning the tangent, with rounded caps and a bright core
+    for (let d = -PHALF_CELLS; d <= PHALF_CELLS; d++) {
       const mx = p.cx + p.tx * d, my = p.cy + p.ty * d;
       let ch;
-      if (vertical) ch = d === 0 ? "(" : d < 0 ? "╭" : "╰"; // tall mouth
-      else          ch = d === 0 ? "~" : d < 0 ? "╭" : "╮"; // wide mouth
+      if (d === 0) ch = "◉";
+      else if (Math.abs(d) === PHALF_CELLS) ch = vertical ? (d < 0 ? "╭" : "╰") : (d < 0 ? "╭" : "╮");
+      else ch = vertical ? "(" : "~";
       put(mx, my, ch, c);
     }
-    put(p.cx, p.cy, "◉", c);             // bright core
   }
 }
 
@@ -526,32 +576,64 @@ function blit(x, y, rows, c) {
     }
 }
 
-function drawCube(withHold) {
+// draw the framed exit door across its stored rect (procedural so it adapts
+// to any clamped size). Clearly bigger than the player, so it reads as a door.
+function drawDoor() {
+  const r = state.doorRect;
+  if (!r) return;
+  const open = state.doorOpen;
+  const handleY = r.y + Math.floor(r.h / 2);
+  for (let yy = 0; yy < r.h; yy++)
+    for (let xx = 0; xx < r.w; xx++) {
+      const gx = r.x + xx, gy = r.y + yy;
+      const top = yy === 0, bot = yy === r.h - 1, left = xx === 0, right = xx === r.w - 1;
+      let ch, cl = "door";
+      if (top && left) ch = "▛";
+      else if (top && right) ch = "▜";
+      else if (bot && left) ch = "▙";
+      else if (bot && right) ch = "▟";
+      else if (top) ch = "▀";
+      else if (bot) ch = "▄";
+      else if (left) ch = "▌";
+      else if (right) ch = "▐";
+      else if (open) { ch = "░"; cl = "doorOpen"; }
+      else if (gx === r.x + r.w - 2 && gy === handleY) ch = "●"; // handle
+      else ch = ((xx + yy) % 2 === 0) ? "▓" : "▒";               // panel
+      put(gx, gy, ch, cl);
+    }
+}
+
+function drawCube() {
   const c = state.cube;
-  const x = Math.round(c.x + c.w / 2 - 1.5);
-  const y = Math.round(c.y + c.h / 2 - 1.5);
-  blit(x, y, ["┌─┐", "│ │", "└─┘"], "cube");
-  put(x + 1, y + 1, "❤", "heart");
+  const x = Math.round(c.x + c.w / 2 - 2.5);
+  const y = Math.round(c.y + c.h / 2 - 2.5);
+  blit(x, y, ["┌───┐",
+              "│▓▓▓│",
+              "│▓ ▓│",
+              "│▓▓▓│",
+              "└───┘"], "cube");
+  put(x + 2, y + 2, "❤", "heart");
 }
 
 function drawPlayer() {
   const p = state.player;
-  const x = Math.round(p.x + p.w / 2 - 1.5);
+  const x = Math.round(p.x + p.w / 2 - 2);
   const y = Math.round(p.y);
   // arms raised when carrying the cube, otherwise out to the sides
-  const art = state.carrying ? ["╲O╱", " █ ", "╱ ╲"]
-                             : [" O ", "┤█├", "╱ ╲"];
+  const art = state.carrying
+    ? ["█  █", " ██ ", "████", " ██ ", "█  █"]
+    : [" ██ ", "████", " ██ ", " ██ ", "█  █"];
   blit(x, y, art, "player");
 
-  // in-world gun barrel tracking the aim (only if armed and not carrying)
+  // in-world gun barrel tracking the aim (only if armed)
   if (state.hasGun) {
-    const ox = p.x + p.w / 2, oy = p.y + p.h / 2 - 0.3;
+    const ox = p.x + p.w / 2, oy = p.y + p.h / 2 - 0.3 * SCALE;
     const ax = state.aim.x, ay = state.aim.y;
-    for (let s = 1.4; s <= 2.4; s += 1) {
-      const gx = ox + ax * s, gy = oy + ay * s;
-      const ch = barrelChar(ax, ay, s >= 2.2);
+    const reach = 2.6 * SCALE;
+    for (let s = 1.2 * SCALE; s <= reach; s += 1) {
+      const ch = barrelChar(ax, ay, s > reach - 1);
       const c = state.fireFlash > 0 ? "flash" : "gun";
-      put(gx, gy, ch, c);
+      put(ox + ax * s, oy + ay * s, ch, c);
     }
   }
 }
@@ -575,6 +657,7 @@ function barrelChar(ax, ay, tip) {
 function render() {
   resetBuffer();
   drawWorld();
+  drawDoor();
   drawPortals();
   drawCube();
   drawPlayer();
@@ -784,8 +867,8 @@ function step(dt) {
   // cube: carried follows the player, else free physics
   const c = state.cube;
   if (state.carrying) {
-    const tx = p.x + p.w / 2 + state.facing * 1.6 - c.w / 2;
-    const ty = p.y - 0.2;
+    const tx = p.x + p.w / 2 + state.facing * 1.6 * SCALE - c.w / 2;
+    const ty = p.y - 0.2 * SCALE;
     c.vx = 0; c.vy = 0;
     c.x = tx; c.y = ty;
     c.pcx = c.x + c.w / 2; c.pcy = c.y + c.h / 2;
