@@ -77,6 +77,7 @@ const state = {
   mouse: { cx: 0, cy: 0, active: false },
   aim: { x: 1, y: 0 },
   facing: 1,
+  lastMoveDir: 1,
   fireFlash: 0,            // >0 briefly after firing
   fireWhich: 0,            // 0 = none, 1 = blue, 2 = orange
   mode: "start",           // start | play | loading | reward | won
@@ -308,8 +309,8 @@ function moveBody(b, dt) {
   // forever. Only applied on the ground, so mid-air momentum through portals
   // is preserved.
   if (b.onGround && b.friction) {
-    b.vx -= b.vx * Math.min(1, GROUND_FRICTION * dt);
-    if (Math.abs(b.vx) < 0.05) b.vx = 0;
+    b.vx -= b.vx * Math.min(1, (GROUND_FRICTION + 6) * dt);
+    if (Math.abs(b.vx) < 0.03) b.vx = 0;
   }
 
   if (b.tpCd > 0) b.tpCd -= dt;
@@ -473,13 +474,40 @@ function teleport(b, A, B) {
 /* ------------------------------ 5. input --------------------------- */
 
 const keys = {};
+function getHorizontalMove() {
+  let move = 0;
+  if (keys["a"] || keys["arrowleft"]) move -= 1;
+  if (keys["d"] || keys["arrowright"]) move += 1;
+  return move;
+}
+
+function getThrowDirection() {
+  if (keys["a"] || keys["arrowleft"]) return -1;
+  if (keys["d"] || keys["arrowright"]) return 1;
+  return state.lastMoveDir || state.facing;
+}
+
+function beginIfNeeded() {
+  if (state.mode === "start") {
+    startGame();
+  }
+}
+
 window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) e.preventDefault();
 
-  if (state.mode === "start") { startGame(); return; }
+  if (state.mode === "start") { beginIfNeeded(); return; }
   if (state.mode !== "play") return;
 
+  if (k === "a" || k === "arrowleft") {
+    state.facing = -1;
+    state.lastMoveDir = -1;
+  }
+  if (k === "d" || k === "arrowright") {
+    state.facing = 1;
+    state.lastMoveDir = 1;
+  }
   if (k === "e") tryGrab();
   if (k === "r") loadLevel(state.levelIndex);
   if (k === "q") fire(0);   // keyboard fire: blue portal toward the aim
@@ -499,6 +527,12 @@ function updateMouseCell(e) {
   state.mouse.active = true;
 }
 screenEl.addEventListener("mousemove", updateMouseCell);
+screenEl.addEventListener("click", () => {
+  beginIfNeeded();
+});
+overlayEl.addEventListener("click", () => {
+  beginIfNeeded();
+});
 
 // unit aim direction from the player toward the mouse (or facing, if no mouse)
 function currentAim() {
@@ -534,12 +568,26 @@ screenEl.addEventListener("mousedown", (e) => {
 function tryGrab() {
   if (state.grabCooldown > 0) return;
   const p = state.player, c = state.cube;
+  const crouching = !!(keys.shift || keys.shiftleft || keys.shiftright);
+  const throwDir = getThrowDirection();
   if (state.carrying) {
-    // drop it where you're standing: fall straight down, no shove, so it
-    // stays put on the plate instead of skating off
     state.carrying = false;
-    c.vx = 0;
-    c.vy = 0;
+    if (crouching) {
+      c.vx = throwDir * 10.625 * SCALE;
+      c.vy = -24 * SCALE;
+      c.x = p.x + p.w / 2 + throwDir * 1.2 * SCALE - c.w / 2;
+      c.y = p.y + 0.2 * SCALE;
+      c.x += throwDir * 1.4 * SCALE;
+      c.y -= 1.0 * SCALE;
+      c.friction = true;
+      c.onGround = false;
+      c.pcx = c.x + c.w / 2; c.pcy = c.y + c.h / 2;
+    } else {
+      // drop it where you're standing: fall straight down, no shove, so it
+      // stays put on the plate instead of skating off
+      c.vx = 0;
+      c.vy = 0;
+    }
     state.grabCooldown = 0.25;
   } else {
     const dx = (c.x + c.w / 2) - (p.x + p.w / 2);
@@ -793,9 +841,6 @@ const TITLE = centerLines([
   "",
   "A P E R T U R E   S C I E N C E   —   1 0   C H A M B E R S",
   "",
-  "Move A/D  ·  Jump W/Space  ·  Hold Shift to crouch",
-  "Fire:  Click or Q = blue,   Shift-Click or F = orange",
-  "E grab/drop the Weighted Cube  ·  R restart chamber",
   "",
   "« click here or press any key to begin »",
   "",
@@ -841,7 +886,7 @@ function completeLevel() {
       "        │ |__   |    |   ___ >==   speedy thing   │",
       "        │    \\__| __ |__/          goes in...     │",
       "        │                                        │",
-      "        │  Click/Q = BLUE   ⇧Click/F = ORANGE   │",
+      "        │  Click/Q = BLUE   Shift-Click/F = ORANGE   │",
       "        └───────────────────────────────────────┘",
     ].join("\n"));
   } else {
@@ -905,10 +950,11 @@ function step(dt) {
   syncPlayerCrouch();
 
   // horizontal control
-  let move = 0;
-  if (keys["a"] || keys["arrowleft"]) move -= 1;
-  if (keys["d"] || keys["arrowright"]) move += 1;
-  if (move !== 0) state.facing = move;
+  const move = getHorizontalMove();
+  if (move !== 0) {
+    state.facing = move;
+    state.lastMoveDir = move;
+  }
   p.vx = move * MOVE_SPD;
 
   // jump
