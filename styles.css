@@ -88,9 +88,17 @@ html,body{
   transition:opacity .25s ease;
 }
 .overlay.hidden{ opacity:0; pointer-events:none; }
+
+/* Before the game starts, show ONLY the title: hide the (empty) game screen
+   and the controls panel, and let the title cover the whole window so it
+   isn't cramped against the panel. Everything appears together on start. */
+body.booting #panel,
+body.booting #screen { display:none; }
+body.booting #overlay{ position:fixed; background:rgba(2,4,8,.92); }
 #overlayText{
   margin:0; font-size:15px; line-height:16px;
   color:#bfe9d4; text-shadow:0 0 8px rgba(120,220,180,.35);
+  text-align:left; /* lines are pre-centered in JS; don't double-center */
 }
 
 /* side panel */

@@ -32,6 +32,7 @@ const MOVE_SPD  = 15;     // horizontal run speed
 const JUMP_VEL  = 24;     // initial jump velocity (up is negative)
 const TRAMP_VEL = 40;     // trampoline launch velocity
 const MAX_FALL  = 60;     // terminal velocity
+const GROUND_FRICTION = 14; // how fast grounded free objects shed sideways speed
 const DT        = 1 / 120;// physics step
 
 const PLAYER_W = 1.7, PLAYER_H = 2.7;
@@ -125,6 +126,7 @@ function loadLevel(i) {
   // place player / cube resting on whatever is below their marker
   state.player = makeBody(px + 0.5 - PLAYER_W / 2, py + 1 - PLAYER_H, PLAYER_W, PLAYER_H);
   state.cube   = makeBody(cx + 0.5 - CUBE_W / 2,  cy + 1 - CUBE_H,  CUBE_W,  CUBE_H);
+  state.cube.friction = true;
   settle(state.player);
   settle(state.cube);
 
@@ -132,7 +134,7 @@ function loadLevel(i) {
 }
 
 function makeBody(x, y, w, h) {
-  return { x, y, w, h, vx: 0, vy: 0, onGround: false,
+  return { x, y, w, h, vx: 0, vy: 0, onGround: false, friction: false,
            pcx: x + w / 2, pcy: y + h / 2, tpCd: 0 };
 }
 
@@ -210,6 +212,14 @@ function moveBody(b, dt) {
       if (isSolidCell(cx, cy, true)) { b.y = cy + 1; b.vy = 0; break; }
   }
 
+  // ground friction so free objects (the cube) settle instead of sliding
+  // forever. Only applied on the ground, so mid-air momentum through portals
+  // is preserved.
+  if (b.onGround && b.friction) {
+    b.vx -= b.vx * Math.min(1, GROUND_FRICTION * dt);
+    if (Math.abs(b.vx) < 0.05) b.vx = 0;
+  }
+
   if (b.tpCd > 0) b.tpCd -= dt;
   tryTeleport(b);
 }
@@ -243,30 +253,30 @@ const rot = (x, y, a) => {
   return { x: x * c - y * s, y: x * s + y * c };
 };
 
-// Fire from origin along unit dir; place portal `which` (0 blue / 1 orange).
+// Fire from origin along dir; place portal `which` (0 blue / 1 orange).
+// Uses DDA grid traversal so the wall FACE we cross (and thus the portal's
+// surface normal) is always unambiguous — no dependence on step size or the
+// exact sub-cell trajectory, which the old marcher was fragile about.
 function firePortal(which, ox, oy, dx, dy) {
   const len = Math.hypot(dx, dy) || 1;
   dx /= len; dy /= len;
-  let lastX = Math.floor(ox), lastY = Math.floor(oy);
-  const step = 0.12;
-  for (let t = 0; t < 120; t += step) {
-    const x = ox + dx * t, y = oy + dy * t;
-    const cx = Math.floor(x), cy = Math.floor(y);
-    if (cx === lastX && cy === lastY) continue;
+  let cx = Math.floor(ox), cy = Math.floor(oy);
+  const stepX = dx > 0 ? 1 : dx < 0 ? -1 : 0;
+  const stepY = dy > 0 ? 1 : dy < 0 ? -1 : 0;
+  const tDeltaX = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+  const tDeltaY = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+  let tMaxX = dx !== 0 ? (stepX > 0 ? cx + 1 - ox : ox - cx) * tDeltaX : Infinity;
+  let tMaxY = dy !== 0 ? (stepY > 0 ? cy + 1 - oy : oy - cy) * tDeltaY : Infinity;
+
+  for (let i = 0; i < 400; i++) {
+    let nx = 0, ny = 0, t;
+    if (tMaxX < tMaxY) { t = tMaxX; cx += stepX; nx = -stepX; tMaxX += tDeltaX; }
+    else               { t = tMaxY; cy += stepY; ny = -stepY; tMaxY += tDeltaY; }
+    if (cx < 0 || cx >= state.W || cy < 0 || cy >= state.H) return false;
     const tile = tileAt(cx, cy);
     if (tile === "X" || tile === "D") return false;          // blocked, no portal
-    if (isPortalable(tile)) {
-      // entered a concrete cell from (lastX,lastY): find the crossed face
-      let nx = 0, ny = 0;
-      if (cx !== lastX && cy === lastY) nx = lastX - cx; // vertical face
-      else if (cy !== lastY && cx === lastX) ny = lastY - cy; // horizontal face
-      else { // diagonal: prefer the axis whose neighbor is open
-        if (!isPortalable(tileAt(lastX, cy))) ny = lastY - cy;
-        else nx = lastX - cx;
-      }
-      return placePortal(which, cx, cy, nx, ny, x, y);
-    }
-    lastX = cx; lastY = cy;
+    if (isPortalable(tile))
+      return placePortal(which, cx, cy, nx, ny, ox + dx * t, oy + dy * t);
   }
   return false;
 }
@@ -370,6 +380,8 @@ window.addEventListener("keydown", (e) => {
 
   if (k === "e") tryGrab();
   if (k === "r") loadLevel(state.levelIndex);
+  if (k === "q") fire(0);   // keyboard fire: blue portal toward the aim
+  if (k === "f") fire(1);   // keyboard fire: orange portal toward the aim
   keys[k] = true;
 });
 window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
@@ -385,6 +397,26 @@ function updateMouseCell(e) {
 }
 screenEl.addEventListener("mousemove", updateMouseCell);
 
+// unit aim direction from the player toward the mouse (or facing, if no mouse)
+function currentAim() {
+  const p = state.player;
+  const ox = p.x + p.w / 2, oy = p.y + p.h / 2;
+  let ax = state.mouse.cx - ox, ay = state.mouse.cy - oy;
+  if (!state.mouse.active || (ax === 0 && ay === 0)) { ax = state.facing; ay = 0; }
+  const l = Math.hypot(ax, ay) || 1;
+  return { x: ax / l, y: ay / l };
+}
+
+// fire a portal (0 = blue, 1 = orange) toward the current aim
+function fire(which) {
+  if (!state.hasGun || state.mode !== "play") return;
+  const p = state.player;
+  const ox = p.x + p.w / 2, oy = p.y + p.h / 2;
+  const a = currentAim();
+  const ok = firePortal(which, ox + a.x * 1.2, oy + a.y * 1.2, a.x, a.y);
+  if (ok) { state.fireFlash = 0.18; state.fireWhich = which + 1; }
+}
+
 screenEl.addEventListener("contextmenu", (e) => e.preventDefault());
 screenEl.addEventListener("mousedown", (e) => {
   e.preventDefault();
@@ -392,22 +424,19 @@ screenEl.addEventListener("mousedown", (e) => {
   if (state.mode === "start") { startGame(); return; }
   if (state.mode !== "play" || !state.hasGun) return;
   updateMouseCell(e);
-  const p = state.player;
-  const ox = p.x + p.w / 2, oy = p.y + p.h / 2;
-  let dx = state.aim.x, dy = state.aim.y;
-  const which = e.button === 2 ? 1 : 0;
-  const ok = firePortal(which, ox + dx * 1.2, oy + dy * 1.2, dx, dy);
-  if (ok) { state.fireFlash = 0.18; state.fireWhich = which + 1; }
+  // right-click OR shift-click = orange (trackpad friendly); plain click = blue
+  fire(e.button === 2 || e.shiftKey ? 1 : 0);
 });
 
 function tryGrab() {
   if (state.grabCooldown > 0) return;
   const p = state.player, c = state.cube;
   if (state.carrying) {
-    // drop in front
+    // drop it where you're standing: fall straight down, no shove, so it
+    // stays put on the plate instead of skating off
     state.carrying = false;
-    c.vx = state.facing * 5 + p.vx * 0.4;
-    c.vy = -2;
+    c.vx = 0;
+    c.vy = 0;
     state.grabCooldown = 0.25;
   } else {
     const dx = (c.x + c.w / 2) - (p.x + p.w / 2);
@@ -610,26 +639,37 @@ function drawGunView() {
 function showOverlay(text) { overlayTxt.textContent = text; overlayEl.classList.remove("hidden"); }
 function hideOverlay() { overlayEl.classList.add("hidden"); }
 
-const TITLE = [
+// Center each line of a text block on one shared axis by padding it
+// symmetrically to the widest line. Lines are authored without leading
+// indentation (except the logo rows, whose leading spaces are part of the
+// letterforms), and the logo rows are equal width so they stay stacked.
+const centerLines = (lines) => {
+  const w = Math.max(...lines.map((l) => l.length));
+  return lines.map((l) => " ".repeat(Math.round((w - l.length) / 2)) + l);
+};
+
+const TITLE = centerLines([
   "",
-  "     █████ ███████ ██████ ██ ██     ██████   ██████  ██████ ████████ █████ ██     ",
-  "     ██  █ ██      ██     ██ ██     ██   ██ ██    ██ ██   ██   ██    ██  █ ██     ",
-  "     █████ ███████ ██     ██ ██     ██████  ██    ██ ██████    ██    █████ ██     ",
-  "     ██  █      ██ ██     ██ ██     ██      ██    ██ ██  ██    ██    ██  █ ██     ",
-  "     ██  █ ███████ ██████ ██ ██████ ██       ██████  ██   ██   ██    ██  █ ██████ ",
+  "█████ ███████ ██████ ██ ██     ██████   ██████  ██████ ████████ █████ ██    ",
+  "██  █ ██      ██     ██ ██     ██   ██ ██    ██ ██   ██   ██    ██  █ ██    ",
+  "█████ ███████ ██     ██ ██     ██████  ██    ██ ██████    ██    █████ ██    ",
+  "██  █      ██ ██     ██ ██     ██      ██    ██ ██  ██    ██    ██  █ ██    ",
+  "██  █ ███████ ██████ ██ ██     ██       ██████  ██   ██   ██    ██  █ ██████",
   "",
-  "                  A P E R T U R E   S C I E N C E   —   1 0   C H A M B E R S",
+  "A P E R T U R E   S C I E N C E   —   1 0   C H A M B E R S",
   "",
-  "        Move A/D · Jump W/Space · Aim with the mouse · L-Click blue portal",
-  "        R-Click orange portal · E grab/drop the Weighted Cube · R restart",
+  "Move A/D  ·  Jump W/Space  ·  Aim with the mouse or trackpad",
+  "Fire:  Click or Q = blue,   Shift-Click or F = orange",
+  "E grab/drop the Weighted Cube  ·  R restart chamber",
   "",
-  "                     « click here or press any key to begin »",
+  "« click here or press any key to begin »",
   "",
-];
+]);
 
 function startGame() {
   state.mode = "play";
   state.hasGun = false;
+  document.body.classList.remove("booting"); // reveal game screen + panel
   loadLevel(0);
   hideOverlay();
   screenEl.focus();
@@ -666,7 +706,7 @@ function completeLevel() {
       "        │ |__   |    |   ___ >==   speedy thing   │",
       "        │    \\__| __ |__/          goes in...     │",
       "        │                                        │",
-      "        │   L-Click = BLUE   R-Click = ORANGE    │",
+      "        │  Click/Q = BLUE   ⇧Click/F = ORANGE   │",
       "        └───────────────────────────────────────┘",
     ].join("\n"));
   } else {
@@ -777,6 +817,7 @@ function step(dt) {
 }
 
 /* ------------------------------ boot ------------------------------- */
+document.body.classList.add("booting"); // title-only until the game starts
 showOverlay(TITLE.join("\n"));
 drawGunView();
 requestAnimationFrame(frame);

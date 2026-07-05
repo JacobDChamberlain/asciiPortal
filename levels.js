@@ -57,7 +57,7 @@ const LEVELS = [
 
   /* ---------- 2 : first portals — cross deadly water ------------ */
   mk("Chamber 02 — The Gap", true,
-    "This channel is too wide to jump and the water is deadly. The side walls are concrete. Shoot a BLUE portal (L-Click) on the LEFT wall and an ORANGE portal (R-Click) high on the RIGHT wall, then walk into the blue one — you'll drop out the orange onto the far ledge. Carry the cube.",
+    "This channel is too wide to jump and the water is deadly. The side walls are concrete. Aim with the mouse and shoot a BLUE portal (Click or Q) on the LEFT wall and an ORANGE portal (Shift-Click or F) high on the RIGHT wall, then walk into the blue one — you'll drop out the orange onto the far ledge. Carry the cube.",
     [
       R(), R(), R(), R(), R(),
       R([2, "P"], [9, "C"], [28, "_"], [34, "D"]),
