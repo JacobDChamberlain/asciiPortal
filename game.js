@@ -42,6 +42,7 @@ const GROUND_FRICTION = 14; // rate (1/time) — unscaled
 const DT        = 1 / 120;// physics step
 
 const PLAYER_W = 1.7 * SCALE, PLAYER_H = 2.7 * SCALE;
+const CROUCH_H = 1.5 * SCALE;
 const CUBE_W   = 2.2 * SCALE, CUBE_H = 2.2 * SCALE;
 
 // portal mouth reaches PHALF_CELLS cells to each side of its center, so the
@@ -182,6 +183,31 @@ function buildDoor(doorOrig) {
 function makeBody(x, y, w, h) {
   return { x, y, w, h, vx: 0, vy: 0, onGround: false, friction: false,
            pcx: x + w / 2, pcy: y + h / 2, tpCd: 0 };
+}
+
+function syncPlayerCrouch() {
+  const p = state.player;
+  if (!p) return;
+
+  const crouching = !!(keys.shift || keys.shiftleft || keys.shiftright);
+  const targetH = crouching ? CROUCH_H : PLAYER_H;
+  if (p.h === targetH) return;
+
+  const bottom = p.y + p.h;
+  const prevY = p.y;
+  const prevH = p.h;
+  p.h = targetH;
+  p.y = bottom - p.h;
+  p.pcx = p.x + p.w / 2;
+  p.pcy = p.y + p.h / 2;
+
+  // avoid popping into a ceiling when standing back up.
+  if (!crouching && bodyHitsSolid(p, false)) {
+    p.h = prevH;
+    p.y = prevY;
+    p.pcx = p.x + p.w / 2;
+    p.pcy = p.y + p.h / 2;
+  }
 }
 
 // drop a freshly-spawned body onto the nearest floor below it
@@ -433,6 +459,7 @@ window.addEventListener("keydown", (e) => {
   if (k === "r") loadLevel(state.levelIndex);
   if (k === "q") fire(0);   // keyboard fire: blue portal toward the aim
   if (k === "f") fire(1);   // keyboard fire: orange portal toward the aim
+  // TODO: hold shift to crouch, which shrinks the player to 1.5 cells tall and lets them fit through a 2-cell portal mouth
   keys[k] = true;
 });
 window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
@@ -619,10 +646,11 @@ function drawPlayer() {
   const p = state.player;
   const x = Math.round(p.x + p.w / 2 - 2);
   const y = Math.round(p.y);
+  const crouching = !!(keys.shift || keys.shiftleft || keys.shiftright);
   // arms raised when carrying the cube, otherwise out to the sides
   const art = state.carrying
-    ? ["█  █", " ██ ", "████", " ██ ", "█  █"]
-    : [" ██ ", "████", " ██ ", " ██ ", "█  █"];
+    ? (crouching ? ["█  █", " ██ ", "████", "████"] : ["█  █", " ██ ", "████", " ██ ", "█  █"])
+    : (crouching ? [" ██ ", "████", " ██ ", "███"] : [" ██ ", "████", " ██ ", " ██ ", "█  █"]);
   blit(x, y, art, "player");
 
   // in-world gun barrel tracking the aim (only if armed)
@@ -741,7 +769,7 @@ const TITLE = centerLines([
   "",
   "A P E R T U R E   S C I E N C E   —   1 0   C H A M B E R S",
   "",
-  "Move A/D  ·  Jump W/Space  ·  Aim with the mouse or trackpad",
+  "Move A/D  ·  Jump W/Space  ·  Hold Shift to crouch",
   "Fire:  Click or Q = blue,   Shift-Click or F = orange",
   "E grab/drop the Weighted Cube  ·  R restart chamber",
   "",
@@ -849,6 +877,8 @@ function frame(now) {
 function step(dt) {
   const p = state.player;
   if (state.grabCooldown > 0) state.grabCooldown -= dt;
+
+  syncPlayerCrouch();
 
   // horizontal control
   let move = 0;
