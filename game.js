@@ -210,6 +210,26 @@ function syncPlayerCrouch() {
   }
 }
 
+function playerSpriteRows() {
+  const crouching = !!(keys.shift || keys.shiftleft || keys.shiftright);
+  if (crouching) {
+    return [
+      " ██ ",
+      "████",
+      " ██ ",
+      "███ ",
+    ];
+  }
+
+  return [
+    " ██ ",
+    "████",
+    " ██ ",
+    " ██ ",
+    "█  █",
+  ];
+}
+
 // drop a freshly-spawned body onto the nearest floor below it
 function settle(b) {
   for (let i = 0; i < 200; i++) {
@@ -306,16 +326,21 @@ function inWater(b) {
   return false;
 }
 
-// cube resting on a plate?
-function platePressed() {
-  const c = state.cube;
-  if (state.carrying) return false;
+// pressure plate triggered by the player or the cube, but not by the cube
+// while it is being carried.
+function bodyOnPlate(body, ignoreWhileCarried) {
+  if (!body) return false;
+  if (ignoreWhileCarried && state.carrying) return false;
+  const bottom = body.y + body.h;
   for (const p of state.plateCells) {
-    const overX = c.x < p.x + 1 && c.x + c.w > p.x;
-    const bottom = c.y + c.h;
+    const overX = body.x < p.x + 1 && body.x + body.w > p.x;
     if (overX && bottom > p.y - 0.35 * SCALE && bottom < p.y + 0.6 * SCALE) return true;
   }
   return false;
+}
+
+function platePressed() {
+  return bodyOnPlate(state.player, false) || bodyOnPlate(state.cube, true);
 }
 
 /* ------------------------------ 4. portals ------------------------- */
@@ -647,10 +672,9 @@ function drawPlayer() {
   const x = Math.round(p.x + p.w / 2 - 2);
   const y = Math.round(p.y);
   const crouching = !!(keys.shift || keys.shiftleft || keys.shiftright);
-  // arms raised when carrying the cube, otherwise out to the sides
   const art = state.carrying
     ? (crouching ? ["█  █", " ██ ", "████", "████"] : ["█  █", " ██ ", "████", " ██ ", "█  █"])
-    : (crouching ? [" ██ ", "████", " ██ ", "███"] : [" ██ ", "████", " ██ ", " ██ ", "█  █"]);
+    : playerSpriteRows();
   blit(x, y, art, "player");
 
   // in-world gun barrel tracking the aim (only if armed)
