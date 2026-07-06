@@ -522,10 +522,11 @@ window.addEventListener("keydown", (e) => {
     state.lastMoveDir = 1;
   }
   if (k === "e") tryGrab();
+  if (k === "t") throwCube();
   if (k === "r") loadLevel(state.levelIndex);
   if (k === "q") fire(0);   // keyboard fire: blue portal toward the aim
   if (k === "f") fire(1);   // keyboard fire: orange portal toward the aim
-  // hold Shift to crouch (handled by syncPlayerCrouch); Shift+E throws the cube
+  // hold Shift to crouch (handled by syncPlayerCrouch)
   keys[k] = true;
 });
 window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
@@ -578,24 +579,13 @@ screenEl.addEventListener("mousedown", (e) => {
   fire(e.button === 2 || e.shiftKey ? 1 : 0);
 });
 
+// E: grab the cube, or drop it straight down where you're standing
 function tryGrab() {
   if (state.grabCooldown > 0) return;
   const p = state.player, c = state.cube;
   if (state.carrying) {
     state.carrying = false;
-    if (isCrouching()) {
-      // crouch + E: throw the cube forward in an arc
-      const dir = getThrowDirection();
-      c.vx = dir * 10.625 * SCALE;
-      c.vy = -24 * SCALE;
-      c.x = p.x + p.w / 2 + dir * 2.6 * SCALE - c.w / 2;   // out in front
-      c.y = p.y - 0.8 * SCALE;                             // from head height
-      c.onGround = false;
-      c.pcx = c.x + c.w / 2; c.pcy = c.y + c.h / 2;
-    } else {
-      // plain drop: straight down, no shove, so it stays put on the plate
-      c.vx = 0; c.vy = 0;
-    }
+    c.vx = 0; c.vy = 0;   // drop straight down so it stays put on the plate
     state.grabCooldown = 0.25;
   } else {
     const dx = (c.x + c.w / 2) - (p.x + p.w / 2);
@@ -605,6 +595,21 @@ function tryGrab() {
       state.grabCooldown = 0.25;
     }
   }
+}
+
+// T: throw the carried cube forward in an arc
+function throwCube() {
+  if (state.grabCooldown > 0 || !state.carrying) return;
+  const p = state.player, c = state.cube;
+  state.carrying = false;
+  const dir = getThrowDirection();
+  c.vx = dir * 10.625 * SCALE;
+  c.vy = -24 * SCALE;
+  c.x = p.x + p.w / 2 + dir * 2.6 * SCALE - c.w / 2;   // out in front
+  c.y = p.y - 0.8 * SCALE;                             // from head height
+  c.onGround = false;
+  c.pcx = c.x + c.w / 2; c.pcy = c.y + c.h / 2;
+  state.grabCooldown = 0.25;
 }
 
 /* ------------------------------ 6. renderer ------------------------ */
@@ -865,40 +870,44 @@ function startGame() {
   screenEl.focus();
 }
 
+// wrap content lines in an aligned border box (every line padded to one width
+// so the right edge never gets pushed out by longer text / ASCII art)
+function boxed(lines, ch) {
+  const c = ch || { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" };
+  const w = Math.max(...lines.map((l) => l.length));
+  const bar = c.h.repeat(w + 2);
+  const body = lines.map((l) => c.v + " " + l + " ".repeat(w - l.length) + " " + c.v);
+  return [c.tl + bar + c.tr, ...body, c.bl + bar + c.br];
+}
+
 function completeLevel() {
   const wasFirst = state.levelIndex === 0;
   if (state.levelIndex >= LEVELS.length - 1) {
     state.mode = "won";
-    showOverlay([
-      "", "", "        ╔══════════════════════════════════════╗",
-      "        ║   ALL TEST CHAMBERS COMPLETE             ║",
-      "        ║                                          ║",
-      "        ║   The cake, regrettably, is a lie.       ║",
-      "        ║                                          ║",
-      "        ║   press R-key... just kidding. Reload    ║",
-      "        ║   the page to run the gauntlet again.    ║",
-      "        ╚══════════════════════════════════════╝",
-    ].join("\n"));
+    showOverlay(["", ""].concat(boxed([
+      "ALL TEST CHAMBERS COMPLETE",
+      "",
+      "The cake, regrettably, is a lie.",
+      "",
+      "Reload the page to run the gauntlet again.",
+    ], { tl: "╔", tr: "╗", bl: "╚", br: "╝", h: "═", v: "║" })).join("\n"));
     return;
   }
   if (wasFirst) {
     state.hasGun = true;
     state.mode = "reward";
     state.overlayTimer = 3.0;
-    showOverlay([
-      "", "",
-      "        ┌───────────────────────────────────────┐",
-      "        │   HANDHELD PORTAL DEVICE  ACQUIRED     │",
-      "        │                                        │",
-      "        │      ______                            │",
-      "        │     /  __  \\____                       │",
-      "        │  __/  / () \\  \\  \\___                   │",
-      "        │ |__   |    |   ___ >==   speedy thing   │",
-      "        │    \\__| __ |__/          goes in...     │",
-      "        │                                        │",
-      "        │  Click/Q = BLUE   Shift-Click/F = ORANGE   │",
-      "        └───────────────────────────────────────┘",
-    ].join("\n"));
+    showOverlay(["", ""].concat(boxed([
+      "HANDHELD PORTAL DEVICE  ACQUIRED",
+      "",
+      "       ______",
+      "      /  __  \\____",
+      "   __/  / () \\  \\  \\___",
+      "  |__   |    |   ___ >==   speedy thing",
+      "     \\__| __ |__/          goes in...",
+      "",
+      "Click/Q = BLUE      Shift-Click/F = ORANGE",
+    ])).join("\n"));
   } else {
     state.mode = "loading";
     state.overlayTimer = 1.6;
