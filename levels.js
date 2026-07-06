@@ -46,7 +46,8 @@ function mk(name, gun, hint, interior) {
 
 const X = (n) => "X".repeat(n);
 const H = (n) => "#".repeat(n);
-const W = (n) => "~".repeat(n);
+const W = (n) => "~".repeat(n);      // deadly water (purple)
+const SW = (n) => "w".repeat(n);     // safe, swimmable water (blue)
 const PLATE = "___";              // wide (3-cell) pressure plate
 
 const LEVELS = [
@@ -80,15 +81,27 @@ const LEVELS = [
       R([4, "P"], [13, "C"]),
     ]),
 
-  /* ---------- 4 : deadly water, wider --------------------------- */
-  mk("Chamber 04 — Don't Get Wet", true,
-    "A wider, deadlier pool. Same idea: portal from the left wall to the right wall to cross in one step, aiming your exit high so you land on the dry ledge by the door. Carry the cube the whole way — touching water restarts the chamber.",
+  /* ---------- 4 : vertical portal climb ------------------------- */
+  mk("Chamber 04 — The Ascent", true,
+    "Climb the shaft with portals: put one on the wall beside you and its twin high on the OPPOSITE wall, step through and drop onto the ledge. Hop to the right ledge, then up to the PLATE at the top-left. Drop the cube there and the door opens far below — then ride back down and walk out.",
     [
-      R(), R(), R(), R(), R(), R(), R(), R(),
-      R([3, "P"], [11, "C"], [39, PLATE], [48, "D"]),
-      R([0, X(14)], [14, W(24)], [38, X(14)]),
-      R([0, X(14)], [14, W(24)], [38, X(14)]),
-      R([0, X(14)], [14, W(24)], [38, X(14)]),
+      R(),                        //  0
+      R(),                        //  1
+      R(),                        //  2
+      R([2, PLATE]),              //  3  top plate (no door here, so nothing blocks the shot)
+      R([0, X(10)]),              //  4  top-left ledge
+      R(),                        //  5
+      R(),                        //  6
+      R(),                        //  7
+      R([43, X(9)]),              //  8  ledge 1 (right wall)
+      R(),                        //  9
+      R(),                        // 10
+      R(),                        // 11
+      R(),                        // 12
+      R(),                        // 13
+      R(),                        // 14
+      R([6, "P"], [13, "C"], [30, "D"]),  // 15  start + exit door (bottom)
+      R([0, X(52)]),              // 16  floor
     ]),
 
   /* ---------- 5 : trampoline + portal --------------------------- */
@@ -115,8 +128,8 @@ const LEVELS = [
       R([37, PLATE], [47, "D"]),
       R([33, X(19)]),
       R(),
-      R([3, "P"], [9, "C"]),
-      R([0, X(11)], [11, "^"], [12, "X"], [13, W(39)]),
+      R([3, "P"], [5, "C"]),
+      R([0, X(8)], [8, "^^^"], [11, "XX"], [13, W(39)]),
     ]),
 
   /* ---------- 7 : pillars in the pool --------------------------- */
@@ -130,26 +143,26 @@ const LEVELS = [
       R([0, X(15)], [15, "#"], [16, W(6)], [22, "#"], [23, W(6)], [29, "#"], [30, W(5)], [35, X(17)]),
     ]),
 
-  /* ---------- 8 : the wide pool --------------------------------- */
-  mk("Chamber 08 — The Long Pool", true,
-    "A wide, deadly pool with concrete side walls. Line up a portal on each side wall to cross in one clean step — your exit height decides where you land, so aim high and drop onto the dry ledge by the door.",
+  /* ---------- 8 : deep, safe swim pool -------------------------- */
+  mk("Chamber 08 — The Reservoir", true,
+    "This blue water is SAFE — hold jump / up to stroke upward and swim. Reach the plate on the far ledge however you like: portal across from the side walls, or just dive in and swim over. No way to lose the cube in here.",
     [
       R(), R(), R(), R(), R(), R(), R(), R(),
-      R([3, "P"], [11, "C"], [39, PLATE], [48, "D"]),
-      R([0, X(13)], [13, W(25)], [38, X(14)]),
-      R([0, X(13)], [13, W(25)], [38, X(14)]),
-      R([0, X(13)], [13, W(25)], [38, X(14)]),
+      R([3, "P"], [11, "C"], [37, PLATE], [47, "D"]),
+      R([0, X(15)], [15, SW(20)], [35, X(17)]),
+      R([0, X(15)], [15, SW(20)], [35, X(17)]),
+      R([0, X(15)], [15, SW(20)], [35, X(17)]),
     ]),
 
-  /* ---------- 9 : longer crossing ------------------------------- */
-  mk("Chamber 09 — The Channel", true,
-    "A long deadly channel. Portal from the left wall to the right wall to cross it, exit aimed high so you drop cleanly onto the plate ledge beside the door. Keep the cube in your arms across the whole span.",
+  /* ---------- 9 : swim pool + deadly gap ------------------------ */
+  mk("Chamber 09 — Two Waters", true,
+    "Two kinds of water: the blue pool on the left is safe to swim, the purple channel on the right is deadly. Wade through the blue if you want, but you must PORTAL over the purple to reach the plate. Side wall to side wall, exit aimed high.",
     [
       R(), R(), R(), R(), R(), R(), R(), R(),
-      R([3, "P"], [11, "C"], [38, PLATE], [48, "D"]),
-      R([0, X(15)], [15, W(20)], [35, X(17)]),
-      R([0, X(15)], [15, W(20)], [35, X(17)]),
-      R([0, X(15)], [15, W(20)], [35, X(17)]),
+      R([3, "P"], [11, "C"], [43, PLATE], [49, "D"]),
+      R([0, X(12)], [12, SW(14)], [26, X(6)], [32, W(8)], [40, X(12)]),
+      R([0, X(12)], [12, SW(14)], [26, X(6)], [32, W(8)], [40, X(12)]),
+      R([0, X(12)], [12, SW(14)], [26, X(6)], [32, W(8)], [40, X(12)]),
     ]),
 
   /* ---------- 10 : the gauntlet --------------------------------- */
@@ -159,8 +172,8 @@ const LEVELS = [
       R(), R(), R(), R(), R(), R(),
       R([17, "######"]),
       R(),
-      R([3, "P"], [11, "C"], [38, PLATE], [48, "D"]),
-      R([0, X(11)], [11, "^"], [12, "X"], [13, W(21)], [34, X(18)]),
+      R([3, "P"], [6, "C"], [38, PLATE], [48, "D"]),
+      R([0, X(8)], [8, "^^^"], [11, "XX"], [13, W(21)], [34, X(18)]),
       R([0, X(13)], [13, W(21)], [34, X(18)]),
       R([0, X(13)], [13, W(21)], [34, X(18)]),
     ]),

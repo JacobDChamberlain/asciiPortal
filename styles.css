@@ -7,6 +7,7 @@
   --metal:#6f7d8c;     /* non-portalable metal */
   --rivet:#aab6c2;
   --water:#852fb0;
+  --swim:#2f7fb0;
   --tramp:#d089e0;
   --plate:#8a7a3a;
   --plateOn:#f2d24a;
@@ -65,6 +66,7 @@ html,body{
 .t-metal{color:var(--metal);}
 .t-rivet{color:var(--rivet);}
 .t-water{color:var(--water);}
+.t-swim{color:var(--swim);}
 .t-tramp{color:var(--tramp);}
 .t-plate{color:var(--plate);}
 .t-plateOn{color:var(--plateOn); text-shadow:0 0 8px var(--plateOn);}
@@ -121,6 +123,16 @@ body.booting #overlay{ position:fixed; background:rgba(2,4,8,.92); }
 }
 .hudLine{ color:#bfe0cf; margin:2px 0; }
 .hudSub{ color:#6f8c7f; font-size:11px; }
+.chamberSelect{
+  width:100%; margin-top:2px;
+  background:#0a1410; color:#bfe0cf;
+  border:1px solid #24463a; border-radius:4px;
+  padding:5px 6px;
+  font-family:inherit; font-size:12px; letter-spacing:.5px;
+  cursor:pointer; outline:none;
+}
+.chamberSelect:hover{ border-color:#3f7d68; }
+.chamberSelect:focus{ border-color:#4f9d80; box-shadow:0 0 0 1px rgba(80,160,130,.4); }
 .ctrl{ margin:3px 0; color:#8aa89b; }
 .ctrl b{ display:inline-block; min-width:78px; color:#e2f3ea; }
 .hudHint{ color:#cfe6d8; line-height:1.45; font-size:12px; }

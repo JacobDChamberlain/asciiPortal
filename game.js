@@ -54,6 +54,11 @@ const GRAB_REACH  = 4.0 * SCALE;
 
 const DOOR_W = 6, DOOR_H = 8;     // exit door size in (scaled) cells
 
+// swimmable ('w') water: buoyant, draggy, and you can stroke upward
+const SWIM_UP    = 13 * SCALE;    // upward swim-stroke speed
+const WATER_DRAG = 2.6;           // velocity damping per second while submerged
+const SWIM_BUOY  = 0.82;          // fraction of gravity cancelled by buoyancy
+
 // tile helpers
 const isSolidTile = (t) => t === "#" || t === "X" || t === "^" || t === "_" || t === "D";
 const isPortalable = (t) => t === "#";
@@ -83,12 +88,20 @@ const state = {
   mode: "start",           // start | play | loading | reward | won
   overlayTimer: 0,
   deathFlash: 0,
+  maxReached: 0,           // furthest chamber unlocked in the selector
 };
+
+// remember unlocked progress across reloads (falls back to session-only)
+try {
+  const saved = parseInt(localStorage.getItem("asciiPortalMaxReached"), 10);
+  if (saved > 0) state.maxReached = Math.min(saved, LEVELS.length - 1);
+} catch (e) { /* localStorage unavailable */ }
 
 const screenEl  = document.getElementById("screen");
 const overlayEl  = document.getElementById("overlay");
 const overlayTxt = document.getElementById("overlayText");
 const gunViewEl  = document.getElementById("gunView");
+const chamberSelect = document.getElementById("chamberSelect");
 
 function tileAt(cx, cy) {
   if (cy < 0 || cy >= state.H || cx < 0 || cx >= state.W) return "X"; // OOB = solid
@@ -98,6 +111,10 @@ function tileAt(cx, cy) {
 function loadLevel(i) {
   const def = LEVELS[i];
   state.levelIndex = i;
+  if (i > state.maxReached) {
+    state.maxReached = i;
+    try { localStorage.setItem("asciiPortalMaxReached", String(i)); } catch (e) {}
+  }
 
   // parse + pad the authored (unscaled) grid
   const w0 = Math.max(...def.rows.map((r) => r.length));
@@ -186,49 +203,30 @@ function makeBody(x, y, w, h) {
            pcx: x + w / 2, pcy: y + h / 2, tpCd: 0 };
 }
 
+// Shrink/grow the player's hitbox for crouch, keeping the FEET planted (the
+// box bottom stays put). Standing back up is refused if the head would clip a
+// ceiling, so you stay crouched under low gaps.
 function syncPlayerCrouch() {
   const p = state.player;
   if (!p) return;
 
-  const crouching = !!(keys.shift || keys.shiftleft || keys.shiftright);
-  const targetH = crouching ? CROUCH_H : PLAYER_H;
+  const targetH = isCrouching() ? CROUCH_H : PLAYER_H;
   if (p.h === targetH) return;
 
   const bottom = p.y + p.h;
-  const prevY = p.y;
-  const prevH = p.h;
+  const prevY = p.y, prevH = p.h;
   p.h = targetH;
   p.y = bottom - p.h;
+
+  if (!isCrouching() && bodyHitsSolid(p, false)) { p.y = prevY; p.h = prevH; }
   p.pcx = p.x + p.w / 2;
   p.pcy = p.y + p.h / 2;
-
-  // avoid popping into a ceiling when standing back up.
-  if (!crouching && bodyHitsSolid(p, false)) {
-    p.h = prevH;
-    p.y = prevY;
-    p.pcx = p.x + p.w / 2;
-    p.pcy = p.y + p.h / 2;
-  }
 }
 
+// player art (drawn feet-anchored, so a shorter set of rows reads as a crouch)
 function playerSpriteRows() {
-  const crouching = !!(keys.shift || keys.shiftleft || keys.shiftright);
-  if (crouching) {
-    return [
-      " ██ ",
-      "████",
-      " ██ ",
-      "███ ",
-    ];
-  }
-
-  return [
-    " ██ ",
-    "████",
-    " ██ ",
-    " ██ ",
-    "█  █",
-  ];
+  if (isCrouching()) return [" ██ ", "████", "█  █"];
+  return [" ██ ", "████", " ██ ", " ██ ", "█  █"];
 }
 
 // drop a freshly-spawned body onto the nearest floor below it
@@ -272,6 +270,12 @@ function moveBody(b, dt) {
   b.pcy = b.y + b.h / 2;
 
   b.vy += GRAVITY * dt;
+  // swimmable water: buoyancy cancels most of gravity and drag slows motion
+  if (inSwim(b)) {
+    b.vy -= GRAVITY * SWIM_BUOY * dt;
+    const d = Math.max(0, 1 - WATER_DRAG * dt);
+    b.vx *= d; b.vy *= d;
+  }
   if (b.vy > MAX_FALL) b.vy = MAX_FALL;
 
   // ---- X axis ----
@@ -317,7 +321,7 @@ function moveBody(b, dt) {
   tryTeleport(b);
 }
 
-// is any cell overlapping this body deadly water?
+// is any cell overlapping this body deadly water ('~')?
 function inWater(b) {
   const x0 = Math.floor(b.x + 0.001), x1 = Math.floor(b.x + b.w - 0.001);
   const y0 = Math.floor(b.y + 0.001), y1 = Math.floor(b.y + b.h - 0.001);
@@ -325,6 +329,12 @@ function inWater(b) {
     for (let x = x0; x <= x1; x++)
       if (tileAt(x, y) === "~") return true;
   return false;
+}
+
+// is this body submerged in safe, swimmable water ('w')?
+function inSwim(b) {
+  const cx = Math.floor(b.x + b.w / 2), cy = Math.floor(b.y + b.h / 2);
+  return tileAt(cx, cy) === "w";
 }
 
 // pressure plate triggered by the player or the cube, but not by the cube
@@ -474,6 +484,9 @@ function teleport(b, A, B) {
 /* ------------------------------ 5. input --------------------------- */
 
 const keys = {};
+// both Shift keys report e.key === "Shift", so one check covers them
+function isCrouching() { return !!keys.shift; }
+
 function getHorizontalMove() {
   let move = 0;
   if (keys["a"] || keys["arrowleft"]) move -= 1;
@@ -512,7 +525,7 @@ window.addEventListener("keydown", (e) => {
   if (k === "r") loadLevel(state.levelIndex);
   if (k === "q") fire(0);   // keyboard fire: blue portal toward the aim
   if (k === "f") fire(1);   // keyboard fire: orange portal toward the aim
-  // TODO: hold shift to crouch, which shrinks the player to 1.5 cells tall and lets them fit through a 2-cell portal mouth
+  // hold Shift to crouch (handled by syncPlayerCrouch); Shift+E throws the cube
   keys[k] = true;
 });
 window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
@@ -568,25 +581,20 @@ screenEl.addEventListener("mousedown", (e) => {
 function tryGrab() {
   if (state.grabCooldown > 0) return;
   const p = state.player, c = state.cube;
-  const crouching = !!(keys.shift || keys.shiftleft || keys.shiftright);
-  const throwDir = getThrowDirection();
   if (state.carrying) {
     state.carrying = false;
-    if (crouching) {
-      c.vx = throwDir * 10.625 * SCALE;
+    if (isCrouching()) {
+      // crouch + E: throw the cube forward in an arc
+      const dir = getThrowDirection();
+      c.vx = dir * 10.625 * SCALE;
       c.vy = -24 * SCALE;
-      c.x = p.x + p.w / 2 + throwDir * 1.2 * SCALE - c.w / 2;
-      c.y = p.y + 0.2 * SCALE;
-      c.x += throwDir * 1.4 * SCALE;
-      c.y -= 1.0 * SCALE;
-      c.friction = true;
+      c.x = p.x + p.w / 2 + dir * 2.6 * SCALE - c.w / 2;   // out in front
+      c.y = p.y - 0.8 * SCALE;                             // from head height
       c.onGround = false;
       c.pcx = c.x + c.w / 2; c.pcy = c.y + c.h / 2;
     } else {
-      // drop it where you're standing: fall straight down, no shove, so it
-      // stays put on the plate instead of skating off
-      c.vx = 0;
-      c.vy = 0;
+      // plain drop: straight down, no shove, so it stays put on the plate
+      c.vx = 0; c.vy = 0;
     }
     state.grabCooldown = 0.25;
   } else {
@@ -630,6 +638,10 @@ function drawWorld() {
         const w = "≈~≈-‗~";
         chars[y][x] = w[(x + Math.floor(f / 6)) % w.length];
         cls[y][x] = "water";
+      } else if (t === "w") {
+        const w = "≈~≈-‗~";
+        chars[y][x] = w[(x + Math.floor(f / 6)) % w.length];
+        cls[y][x] = "swim";
       } else if (t === "^") {
         chars[y][x] = (Math.floor(f / 6) % 2 === 0) ? "^" : "▲";
         cls[y][x] = "tramp";
@@ -717,12 +729,11 @@ function drawCube() {
 
 function drawPlayer() {
   const p = state.player;
-  const x = Math.round(p.x + p.w / 2 - 2);
-  const y = Math.round(p.y);
-  const crouching = !!(keys.shift || keys.shiftleft || keys.shiftright);
   const art = state.carrying
-    ? (crouching ? ["█  █", " ██ ", "████", "████"] : ["█  █", " ██ ", "████", " ██ ", "█  █"])
+    ? (isCrouching() ? ["█  █", " ██ ", "████"] : ["█  █", " ██ ", "████", " ██ ", "█  █"])
     : playerSpriteRows();
+  const x = Math.round(p.x + p.w / 2 - 2);
+  const y = Math.round(p.y + p.h) - art.length;   // anchor the FEET to the box bottom
   blit(x, y, art, "player");
 
   // in-world gun barrel tracking the aim (only if armed)
@@ -788,9 +799,8 @@ const esc = (ch) => ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : ch === "&" ? "&a
 /* ---- side-panel HUD ---- */
 function updateHud() {
   const def = LEVELS[state.levelIndex];
-  document.getElementById("hudLevel").textContent =
-    "CHAMBER " + String(state.levelIndex + 1).padStart(2, "0");
-  document.getElementById("hudName").innerHTML = "&nbsp;" + def.name.replace(/^Chamber \d+ — /, "");
+  syncChamberOptions();
+  if (chamberSelect) chamberSelect.value = String(state.levelIndex);
   document.getElementById("hudHint").textContent = def.hint;
   const b = state.portals[0] ? "SET" : "—";
   const o = state.portals[1] ? "SET" : "—";
@@ -957,8 +967,11 @@ function step(dt) {
   }
   p.vx = move * MOVE_SPD;
 
-  // jump
-  if ((keys["w"] || keys[" "] || keys["arrowup"]) && p.onGround) {
+  // jump — or swim upward while submerged in safe water
+  const up = keys["w"] || keys[" "] || keys["arrowup"];
+  if (up && inSwim(p)) {
+    p.vy = -SWIM_UP;
+  } else if (up && p.onGround) {
     p.vy = -JUMP_VEL; p.onGround = false;
   }
 
@@ -1000,6 +1013,62 @@ function step(dt) {
 }
 
 /* ------------------------------ boot ------------------------------- */
+
+// Monospace glyphs are taller than they are wide, so a "square" of N x N
+// characters renders as a tall rectangle. Measure the font's real character
+// advance width and set the grid's line-height to match, so every cell is
+// square and cubes/player/portals get true proportions.
+function squareUpCells() {
+  try {
+    const probe = document.createElement("span");
+    probe.textContent = "0".repeat(100);
+    probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;";
+    screenEl.appendChild(probe);
+    const cw = probe.getBoundingClientRect().width / 100;
+    screenEl.removeChild(probe);
+    if (cw > 0) screenEl.style.lineHeight = cw + "px";
+  } catch (e) { /* no DOM to measure (e.g. headless) — keep CSS default */ }
+}
+// Square cells disabled for now — uncomment these two lines to re-enable the
+// true-square look (measures the font and tightens line-height to match).
+// squareUpCells();
+// window.addEventListener("resize", squareUpCells);
+
+// Chamber selector: jump only to chambers you've already reached. Chambers 2+
+// grant the gun (loadLevel handles that), so warping arms you correctly.
+function jumpToChamber(i) {
+  if (i < 0 || i > state.maxReached) return;   // can't skip ahead of your progress
+  document.body.classList.remove("booting");
+  loadLevel(i);
+  state.mode = "play";
+  hideOverlay();
+  if (screenEl.focus) screenEl.focus();
+}
+
+// (re)populate the dropdown with only the reached chambers; cheap no-op unless
+// the unlocked count changed.
+let chamberOptionsBuilt = -1;
+function syncChamberOptions() {
+  if (!chamberSelect || typeof document.createElement !== "function") return;
+  if (chamberOptionsBuilt === state.maxReached) return;
+  chamberOptionsBuilt = state.maxReached;
+  while (chamberSelect.firstChild) chamberSelect.removeChild(chamberSelect.firstChild);
+  for (let i = 0; i <= state.maxReached; i++) {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = LEVELS[i].name;
+    chamberSelect.appendChild(opt);
+  }
+}
+function buildChamberSelect() {
+  if (!chamberSelect) return;
+  syncChamberOptions();
+  chamberSelect.addEventListener("change", () => jumpToChamber(parseInt(chamberSelect.value, 10)));
+  // keep dropdown navigation (arrows, etc.) from also driving the player
+  chamberSelect.addEventListener("keydown", (e) => e.stopPropagation());
+}
+buildChamberSelect();
+
 document.body.classList.add("booting"); // title-only until the game starts
 showOverlay(TITLE.join("\n"));
 drawGunView();
