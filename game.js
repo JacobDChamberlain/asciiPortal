@@ -54,6 +54,12 @@ const GRAB_REACH  = 4.0 * SCALE;
 
 const DOOR_W = 6, DOOR_H = 8;     // exit door size in (scaled) cells
 
+// boss fights
+const SWORD_REACH = 5 * SCALE;    // how close you must be to land a sword strike
+const SWORD_DRAW  = 4 * SCALE;    // length of the drawn blade
+const BOSS_HIT_CD = 0.5;          // seconds a boss is immune after taking a hit
+const SWORD_CD    = 0.35;         // seconds between sword swings
+
 // swimmable ('w') water: buoyant, draggy, and you can stroke upward
 const SWIM_UP    = 13 * SCALE;    // upward swim-stroke speed
 const WATER_DRAG = 2.6;           // velocity damping per second while submerged
@@ -85,10 +91,20 @@ const state = {
   lastMoveDir: 1,
   fireFlash: 0,            // >0 briefly after firing
   fireWhich: 0,            // 0 = none, 1 = blue, 2 = orange
-  mode: "start",           // start | play | loading | reward | won
+  mode: "start",           // start | play | loading | reward | bossIntro | boss | finalBoss | won
   overlayTimer: 0,
   deathFlash: 0,
   maxReached: 0,           // furthest chamber unlocked in the selector
+
+  // boss state
+  hasSword: false,         // granted after Chamber 10; enables the H strike
+  boss: null,              // active boss body (see enterBoss) or null
+  bossNum: 0,              // 1..4 — which boss is currently loaded
+  pendingBoss: 0,          // boss to launch after the current reward overlay
+  introBoss: 0,            // boss to launch after the current bossIntro overlay
+  swordFlash: 0,           // >0 briefly after a sword swing
+  swordCd: 0,              // cooldown between swings
+  playerName: "",          // shown on the congrats screen (enter-name is TODO)
 };
 
 // remember unlocked progress across reloads (falls back to session-only)
@@ -157,6 +173,7 @@ function loadLevel(i) {
   state.carrying = false;
   state.grabCooldown = 0;
   state.frame = 0;
+  state.boss = null;
 
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++)
@@ -511,7 +528,9 @@ window.addEventListener("keydown", (e) => {
   if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) e.preventDefault();
 
   if (state.mode === "start") { beginIfNeeded(); return; }
-  if (state.mode !== "play") return;
+  const playing = state.mode === "play";
+  const bossing = state.mode === "boss" || state.mode === "finalBoss";
+  if (!playing && !bossing) return;
 
   if (k === "a" || k === "arrowleft") {
     state.facing = -1;
@@ -521,11 +540,17 @@ window.addEventListener("keydown", (e) => {
     state.facing = 1;
     state.lastMoveDir = 1;
   }
-  if (k === "e") tryGrab();
-  if (k === "t") throwCube();
-  if (k === "r") loadLevel(state.levelIndex);
-  if (k === "q") fire(0);   // keyboard fire: blue portal toward the aim
-  if (k === "f") fire(1);   // keyboard fire: orange portal toward the aim
+  if (playing) {
+    if (k === "e") tryGrab();
+    if (k === "t") throwCube();
+    if (k === "r") loadLevel(state.levelIndex);
+    if (k === "q") fire(0);   // keyboard fire: blue portal toward the aim
+    if (k === "f") fire(1);   // keyboard fire: orange portal toward the aim
+  }
+  if (bossing) {
+    if (k === "r") enterBoss(state.bossNum);   // restart the current boss
+    if (k === "h") swordStrike();              // Portal Blade (final boss only)
+  }
   // hold Shift to crouch (handled by syncPlayerCrouch)
   keys[k] = true;
 });
@@ -741,6 +766,17 @@ function drawPlayer() {
   const y = Math.round(p.y + p.h) - art.length;   // anchor the FEET to the box bottom
   blit(x, y, art, "player");
 
+  // in the final fight, wield the Portal Blade instead of the gun
+  if (state.mode === "finalBoss" && state.hasSword) {
+    const dir = state.facing;
+    const ox = p.x + p.w / 2, oy = p.y + p.h / 2;
+    const c = state.swordFlash > 0 ? "swordFlash" : "sword";
+    for (let s = 1; s <= SWORD_DRAW; s++) put(ox + dir * s, oy, "═", c);
+    put(ox + dir * (SWORD_DRAW + 1), oy, dir > 0 ? "▶" : "◀", c);
+    put(ox, oy, "◈", c);   // hilt
+    return;
+  }
+
   // in-world gun barrel tracking the aim (only if armed)
   if (state.hasGun) {
     const ox = p.x + p.w / 2, oy = p.y + p.h / 2 - 0.3 * SCALE;
@@ -770,13 +806,61 @@ function barrelChar(ax, ay, tip) {
   return base;
 }
 
+// draw the active boss, flashing white for a beat after each hit
+function drawBoss() {
+  const b = state.boss;
+  if (!b) return;
+  const sw = Math.max(...b.sprite.map((r) => r.length));
+  const sx = Math.round(b.x + b.w / 2 - sw / 2);
+  const sy = Math.round(b.y + b.h / 2 - b.sprite.length / 2);
+  blit(sx, sy, b.sprite, b.flash > 0 ? "flash" : b.cls);
+}
+
+// the final boss's animated mosaic backdrop — busy, flashing, painted over
+// air cells only (walls and, later, the boss/player draw on top)
+function drawMosaic() {
+  const f = state.frame;
+  const glyphs = "◆◇❖✦▓▒░";
+  const pal = ["mosaicA", "mosaicB", "mosaicC"];
+  for (let y = 0; y < state.H; y++)
+    for (let x = 0; x < state.W; x++) {
+      if (state.grid[y][x] !== " ") continue;   // leave the walls alone
+      const g = x * 7 + y * 11 + Math.floor(f / 3);
+      chars[y][x] = glyphs[((g % glyphs.length) + glyphs.length) % glyphs.length];
+      cls[y][x] = pal[((x + y + Math.floor(f / 5)) % pal.length)];
+    }
+}
+
+// in-arena boss health bar + name plate along the top of the screen
+function drawBossHud() {
+  const b = state.boss;
+  if (!b) return;
+  const segs = b.maxHp;
+  const barX = Math.floor(state.W / 2 - segs / 2);
+  for (let i = 0; i < segs; i++) {
+    const on = i < b.hp;
+    put(barX + i, 2, on ? "█" : "░", on ? "bossbar" : "bossbarEmpty");
+  }
+  const nx = Math.floor(state.W / 2 - b.name.length / 2);
+  for (let i = 0; i < b.name.length; i++)
+    if (b.name[i] !== " ") put(nx + i, 0, b.name[i], "bossname");
+}
+
 function render() {
   resetBuffer();
   drawWorld();
-  drawDoor();
-  drawPortals();
-  drawCube();
-  drawPlayer();
+  const inBoss = state.mode === "boss" || state.mode === "finalBoss";
+  if (inBoss) {
+    if (state.boss && state.boss.isFinal) drawMosaic();
+    drawBoss();
+    drawPlayer();
+    drawBossHud();
+  } else {
+    drawDoor();
+    drawPortals();
+    drawCube();
+    drawPlayer();
+  }
 
   // compose HTML with run-length grouping per row
   let html = "";
@@ -881,19 +965,10 @@ function boxed(lines, ch) {
 }
 
 function completeLevel() {
-  const wasFirst = state.levelIndex === 0;
-  if (state.levelIndex >= LEVELS.length - 1) {
-    state.mode = "won";
-    showOverlay(["", ""].concat(boxed([
-      "ALL TEST CHAMBERS COMPLETE",
-      "",
-      "The cake, regrettably, is a lie.",
-      "",
-      "Reload the page to run the gauntlet again.",
-    ], { tl: "╔", tr: "╗", bl: "╚", br: "╝", h: "═", v: "║" })).join("\n"));
-    return;
-  }
-  if (wasFirst) {
+  const idx = state.levelIndex;
+
+  // Chamber 1 → grant the portal gun
+  if (idx === 0) {
     state.hasGun = true;
     state.mode = "reward";
     state.overlayTimer = 3.0;
@@ -908,10 +983,37 @@ function completeLevel() {
       "",
       "Click/Q = BLUE      Shift-Click/F = ORANGE",
     ])).join("\n"));
-  } else {
-    state.mode = "loading";
-    state.overlayTimer = 1.6;
+    return;
   }
+
+  // After Chambers 3 / 6 / 9 → a sweeper boss fight (bosses 1 / 2 / 3)
+  if (idx === 2 || idx === 5 || idx === 8) {
+    startBossIntro(idx === 2 ? 1 : idx === 5 ? 2 : 3);
+    return;
+  }
+
+  // After Chamber 10 (the last chamber) → grant the sword, then the final boss
+  if (idx >= LEVELS.length - 1) {
+    state.hasSword = true;
+    state.mode = "reward";
+    state.overlayTimer = 3.4;
+    state.pendingBoss = 4;   // launch the final boss when this overlay ends
+    showOverlay(["", ""].concat(boxed([
+      "PORTAL BLADE  ACQUIRED",
+      "",
+      "      ▟███████▙",
+      "   ◈══╪════════════▶",
+      "      ▜███████▛",
+      "",
+      "A final horror stirs beyond the last chamber.",
+      "Press  H  to strike its core.",
+    ], { tl: "╔", tr: "╗", bl: "╚", br: "╝", h: "═", v: "║" })).join("\n"));
+    return;
+  }
+
+  // Ordinary chamber → brief loading beat, then advance
+  state.mode = "loading";
+  state.overlayTimer = 1.6;
 }
 
 function advance() {
@@ -923,6 +1025,248 @@ function advance() {
 function killPlayer() {
   state.deathFlash = 0.35;
   loadLevel(state.levelIndex);
+}
+
+/* ------------------------------ 7b. boss fights -------------------- */
+
+// axis-aligned overlap between two bodies
+function aabb(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x &&
+         a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+// A plain arena for a boss: solid border all around, the floor is the bottom
+// border, and the player spawns on the lowest interior row near the left wall.
+// The final boss gets a taller room to hold its bulk + the mosaic backdrop.
+function bossArenaRows(final) {
+  const wIn = 52, hIn = final ? 17 : 13;
+  const rows = ["#".repeat(wIn + 2)];
+  for (let y = 0; y < hIn; y++) {
+    const cells = Array(wIn).fill(" ");
+    if (y === hIn - 1) cells[2] = "P";      // player start
+    rows.push("#" + cells.join("") + "#");
+  }
+  rows.push("#".repeat(wIn + 2));
+  return rows;
+}
+
+// scale authored arena rows the same way loadLevel does, pulling out P
+function buildArena(rows) {
+  const w0 = Math.max(...rows.map((r) => r.length));
+  const base = rows.map((r) => {
+    const a = r.split("");
+    while (a.length < w0) a.push(" ");
+    return a;
+  });
+  const H0 = base.length;
+  let pOrig = { x: 3, y: H0 - 2 };
+  for (let y = 0; y < H0; y++)
+    for (let x = 0; x < w0; x++)
+      if (base[y][x] === "P") { pOrig = { x, y }; base[y][x] = " "; }
+
+  const W = w0 * SCALE, H = H0 * SCALE;
+  const grid = Array.from({ length: H }, () => Array(W).fill(" "));
+  for (let y = 0; y < H0; y++)
+    for (let x = 0; x < w0; x++) {
+      const t = base[y][x];
+      for (let dy = 0; dy < SCALE; dy++)
+        for (let dx = 0; dx < SCALE; dx++) grid[y * SCALE + dy][x * SCALE + dx] = t;
+    }
+  return { grid, W, H, pOrig };
+}
+
+// show a short "BOSS INCOMING" card, then drop into the fight
+function startBossIntro(num) {
+  const def = BOSSES[num - 1];
+  state.introBoss = num;
+  state.mode = "bossIntro";
+  state.overlayTimer = 2.4;
+  showOverlay(["", ""].concat(boxed([
+    def.final ? "!! FINAL BOSS !!" : "WARNING — BOSS APPROACHING",
+    "",
+    def.name,
+    "",
+    def.final
+      ? "Get close and press  H  to strike.  10 hits."
+      : "Jump on top of it to hit it — " + def.hits + " stomps.",
+  ], { tl: "╔", tr: "╗", bl: "╚", br: "╝", h: "═", v: "║" })).join("\n"));
+}
+
+function beginBossFight() {
+  enterBoss(state.introBoss);
+  state.introBoss = 0;
+  hideOverlay();
+}
+
+// Load a boss arena and spawn the boss. Sweeper bosses are positioned so their
+// top sits right around the player's jump apex (stompable); the final boss is
+// placed high and is only vulnerable to the sword.
+function enterBoss(num) {
+  const def = BOSSES[num - 1];
+  const { grid, W, H, pOrig } = buildArena(bossArenaRows(def.final));
+  state.grid = grid; state.W = W; state.H = H;
+  state.portals = [null, null];
+  state.plateCells = []; state.doorCells = []; state.doorRect = null;
+  state.doorOpen = false; state.carrying = false; state.grabCooldown = 0;
+  state.frame = 0;
+  state.bossNum = num;
+
+  const px = pOrig.x * SCALE + SCALE / 2, py = (pOrig.y + 1) * SCALE;
+  state.player = makeBody(px - PLAYER_W / 2, py - PLAYER_H, PLAYER_W, PLAYER_H);
+  settle(state.player);
+  state.cube = makeBody(-100, -100, CUBE_W, CUBE_H); // parked off-screen, unused
+
+  const floorTopY = H - SCALE;
+  const apex = (JUMP_VEL * JUMP_VEL) / (2 * GRAVITY); // reachable jump height
+  // The final boss makes a grand entrance up high, then DESCENDS to a resting
+  // height where the sword (drawn at the player's mid-body) plainly overlaps
+  // its lower half, so hits read clearly. Sweepers sit at jump-apex height.
+  const startY = def.final ? Math.floor(H * 0.14) : 0;
+  const targetY = def.final
+    ? floorTopY - def.bh - 10        // rests up high enough that you must jump
+    : Math.round(floorTopY - apex + 2);
+  const descendSpeed = def.final ? (targetY - startY) / 2.5 : 0; // cells/sec
+
+  state.boss = {
+    x: Math.floor(W / 2 - def.bw / 2), y: targetY,
+    w: def.bw, h: def.bh,
+    baseY: def.final ? startY : targetY, targetY, descendSpeed,
+    bobT: 0, bobAmp: def.final ? 1.2 : 1.5,
+    dir: 1, speed: def.speed * SCALE,
+    minX: 2 * SCALE, maxX: W - 2 * SCALE,
+    hp: def.hits, maxHp: def.hits,
+    hitCd: 0, flash: 0,
+    isFinal: def.final, sprite: def.sprite, cls: def.cls, name: def.name,
+  };
+
+  state.mode = def.final ? "finalBoss" : "boss";
+  updateBossHint();
+}
+
+function updateBossHint() {
+  const def = BOSSES[state.bossNum - 1];
+  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  set("hudHint", def.final
+    ? "FINAL BOSS: get close and press H to strike with the Portal Blade. 10 hits!"
+    : "BOSS: jump on top of it to hit it — " + def.hits + " stomps to destroy it.");
+  set("hudCube", "CUBE: —");
+  set("hudPlate", def.final ? "SWORD: ready — press H" : "STOMP the boss!");
+}
+
+// sweep horizontally, bounce off the side walls, and bob gently
+function bossMove(b, dt) {
+  b.x += b.dir * b.speed * dt;
+  if (b.x < b.minX) { b.x = b.minX; b.dir = 1; }
+  if (b.x + b.w > b.maxX) { b.x = b.maxX - b.w; b.dir = -1; }
+  // final boss eases down from its entrance height to its resting height
+  if (b.descendSpeed && b.baseY < b.targetY)
+    b.baseY = Math.min(b.targetY, b.baseY + b.descendSpeed * dt);
+  b.bobT += dt;
+  b.y = b.baseY + Math.sin(b.bobT * 2.4) * b.bobAmp;
+}
+
+function damageBoss(b, n) {
+  b.hp -= n;
+  b.hitCd = BOSS_HIT_CD;
+  b.flash = 0.28;
+  if (b.hp <= 0) bossDefeated();
+}
+
+function bossDefeated() {
+  if (state.boss.isFinal) { winGame(); return; }
+  // sweeper down → celebrate briefly, then continue to the next chamber
+  state.mode = "loading";
+  state.overlayTimer = 2.2;
+  showOverlay(["", ""].concat(boxed([
+    state.boss.name + "  DESTROYED",
+    "",
+    "Scrap rains down. The path clears.",
+  ], { tl: "╔", tr: "╗", bl: "╚", br: "╝", h: "═", v: "║" })).join("\n"));
+}
+
+// a bad hit on a sweeper restarts that fight from full health
+function hurtInBoss() {
+  state.deathFlash = 0.35;
+  enterBoss(state.bossNum);
+}
+
+// H: swing the Portal Blade at the final boss if you're close enough
+function swordStrike() {
+  if (!state.hasSword || state.mode !== "finalBoss" || state.swordCd > 0) return;
+  state.swordFlash = 0.2;
+  state.swordCd = SWORD_CD;
+  const p = state.player, b = state.boss;
+  if (!b || b.hitCd > 0) return;
+  // The blade reaches SWORD_REACH horizontally in the facing direction, but
+  // only a little above/below the body — so you must JUMP up to the boss to
+  // land a hit, rather than tagging it from the ground.
+  const dir = state.facing;
+  const vpad = 1.5 * SCALE;
+  const box = {
+    x: dir > 0 ? p.x : p.x - SWORD_REACH,
+    y: p.y - vpad,
+    w: p.w + SWORD_REACH,
+    h: p.h + vpad * 2,
+  };
+  if (aabb(box, b)) damageBoss(b, 1);
+}
+
+function stepBoss(dt) {
+  const p = state.player, b = state.boss;
+  if (!b) return;
+  if (state.grabCooldown > 0) state.grabCooldown -= dt;
+  if (state.swordCd > 0) state.swordCd -= dt;
+  if (b.hitCd > 0) b.hitCd -= dt;
+  if (b.flash > 0) b.flash -= dt;
+
+  // player controls (movement + jump, no puzzle mechanics in here)
+  syncPlayerCrouch();
+  const move = getHorizontalMove();
+  if (move !== 0) { state.facing = move; state.lastMoveDir = move; }
+  p.vx = move * MOVE_SPD;
+  const up = keys["w"] || keys[" "] || keys["arrowup"];
+  if (up && p.onGround) { p.vy = -JUMP_VEL; p.onGround = false; }
+  moveBody(p, dt);
+
+  bossMove(b, dt);
+
+  // contact resolution
+  if (aabb(p, b) && b.hitCd <= 0) {
+    const stomp = !b.isFinal && p.vy > 0 && (p.y + p.h) <= b.y + b.h * 0.6;
+    if (stomp) {
+      damageBoss(b, 1);
+      p.vy = -JUMP_VEL * 0.85; p.onGround = false;  // bounce off its head
+    } else if (!b.isFinal) {
+      hurtInBoss(); return;                          // ran into it → restart
+    } else {
+      // final boss: no death, just knock the player back
+      p.vx = (p.x + p.w / 2 < b.x + b.w / 2 ? -1 : 1) * MOVE_SPD * 1.6;
+      p.vy = -JUMP_VEL * 0.5;
+      b.hitCd = 0.4;
+    }
+  }
+
+  // fell out of the arena
+  if (p.y > state.H + 3) { hurtInBoss(); return; }
+}
+
+function winGame() {
+  state.mode = "won";
+  const name = (state.playerName && state.playerName.trim()) || "AGENT";
+  showOverlay(["", ""].concat(boxed([
+    "✦ ✦ ✦   V I C T O R Y   ✦ ✦ ✦",
+    "",
+    "     \\o/   THE ARCHITECT FALLS   \\o/",
+    "",
+    "CONGRATULATIONS, " + name + "!",
+    "",
+    "You cleared all 10 chambers, felled three",
+    "sentinels, and shattered the core with the blade.",
+    "",
+    "The cake was a lie. The glory is not.",
+    "",
+    "Reload the page to run the gauntlet again.",
+  ], { tl: "╔", tr: "╗", bl: "╚", br: "╝", h: "═", v: "║" })).join("\n"));
 }
 
 /* ------------------------------ main loop -------------------------- */
@@ -948,12 +1292,23 @@ function frame(now) {
     acc += dtReal;
     let steps = 0;
     while (acc >= DT && steps < 20) { step(DT); acc -= DT; steps++; }
+  } else if (state.mode === "boss" || state.mode === "finalBoss") {
+    acc += dtReal;
+    let steps = 0;
+    while (acc >= DT && steps < 20) { stepBoss(DT); acc -= DT; steps++; }
   } else if (state.mode === "loading" || state.mode === "reward") {
     state.overlayTimer -= dtReal;
-    if (state.overlayTimer <= 0) advance();
+    if (state.overlayTimer <= 0) {
+      if (state.pendingBoss) { const n = state.pendingBoss; state.pendingBoss = 0; startBossIntro(n); }
+      else advance();
+    }
+  } else if (state.mode === "bossIntro") {
+    state.overlayTimer -= dtReal;
+    if (state.overlayTimer <= 0) beginBossFight();
   }
 
   if (state.fireFlash > 0) state.fireFlash -= dtReal;
+  if (state.swordFlash > 0) state.swordFlash -= dtReal;
   if (state.deathFlash > 0) state.deathFlash -= dtReal;
 
   if (state.mode !== "start" && state.mode !== "won" && state.grid.length) render();

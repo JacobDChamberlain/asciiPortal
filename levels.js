@@ -179,4 +179,73 @@ const LEVELS = [
     ]),
 ];
 
-if (typeof module !== "undefined") module.exports = { LEVELS };
+/*
+ * BOSS FIGHTS — not part of LEVELS (so they never show up in the chamber
+ * selector). Sweeper bosses trigger AFTER Chambers 3, 6 and 9; the final boss
+ * triggers after Chamber 10. Sweepers hover-and-sweep across a plain arena and
+ * die to STOMPS (jump onto their top). The final boss is massive, lives in an
+ * animated mosaic room, and only takes damage from the SWORD (press H).
+ *
+ * Fields:
+ *   name   — shown on the in-arena health bar
+ *   hits   — stomps (or sword strikes) needed to kill
+ *   bw,bh  — collision box size in (already-scaled) cells
+ *   speed  — horizontal sweep speed, UNSCALED (enterBoss multiplies by SCALE;
+ *            keep it SCALE-free here since levels.js loads before game.js)
+ *   final  — true only for the last boss (sword-only, mosaic room)
+ *   cls    — color token (see .t-* rules in styles.css)
+ *   sprite — multi-row ASCII art, drawn centered on the collision box
+ */
+const BOSSES = [
+  /* ---- Boss 1 (after Chamber 3): 3 stomps ---- */
+  { name: "SENTRY MK-I", hits: 3, bw: 9, bh: 4, speed: 20, final: false, cls: "boss1",
+    sprite: [
+      "  ▄█████▄  ",
+      " ▟█◉███◉█▙ ",
+      " ███▀▀▀███ ",
+      " ▜███████▛ ",
+      "  ▀▟█▙▟█▙▀ ",
+    ] },
+
+  /* ---- Boss 2 (after Chamber 6): 4 stomps, bigger ---- */
+  { name: "GUARDIAN-X", hits: 4, bw: 12, bh: 5, speed: 24, final: false, cls: "boss2",
+    sprite: [
+      "   ▄▄████▄▄   ",
+      "  ▟██◉██◉██▙  ",
+      " ▟████▀▀████▙ ",
+      " ██▛██████▜██ ",
+      " ▜██████████▛ ",
+      "   ▀▜██▛▀▜▛▀  ",
+    ] },
+
+  /* ---- Boss 3 (after Chamber 9): 5 stomps, bigger still ---- */
+  { name: "OMEGA CORE", hits: 5, bw: 14, bh: 6, speed: 27, final: false, cls: "boss3",
+    sprite: [
+      "    ▄▄▄▄▄▄▄▄    ",
+      "  ▄██████████▄  ",
+      " ▟███◉████◉███▙ ",
+      " ████▄▄▄▄▄▄████ ",
+      " ██▛██▀██▀██▜██ ",
+      "  ▜██████████▛  ",
+      "    ▀▀▜██▛▀▀    ",
+    ] },
+
+  /* ---- Final boss (after Chamber 10): 10 SWORD hits, massive ---- */
+  { name: "THE ARCHITECT", hits: 10, bw: 24, bh: 10, speed: 11, final: true, cls: "bossF",
+    sprite: [
+      "        ▄▄▄██████████▄▄▄        ",
+      "     ▄██████████████████▄     ",
+      "   ▄██████◉██████◉██████▄   ",
+      "  ████████████████████████  ",
+      " ██████▛▀▀▀▀▀▀▀▀▀▀▀▀▀▜██████ ",
+      " █████▌  ▄▄▄▄▄▄▄▄▄▄  ▐█████ ",
+      " █████▌  █▀█▀█▀█▀█▀  ▐█████ ",
+      " ██████▙▄▄▄▄▄▄▄▄▄▄▄▄▟██████ ",
+      "  ████████████████████████  ",
+      "   ▜██████████████████████▛   ",
+      "     ▀▜████▛▀▀  ▀▀▜████▛▀     ",
+      "        ▀▀▀        ▀▀▀        ",
+    ] },
+];
+
+if (typeof module !== "undefined") module.exports = { LEVELS, BOSSES };

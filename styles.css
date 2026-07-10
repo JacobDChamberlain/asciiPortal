@@ -20,6 +20,17 @@
   --pb:#ff9a3c;        /* orange portal */
   --gun:#dfe7ee;
   --flash:#ffffff;
+  --boss1:#ff6a5a;      /* sweeper bosses, escalating menace */
+  --boss2:#ff894a;
+  --boss3:#ffd23c;
+  --bossF:#ff3cf0;      /* the massive final boss */
+  --bossbar:#ff2d5a;
+  --bossbarEmpty:#3a1420;
+  --bossname:#ffe08a;
+  --sword:#bfe9ff;
+  --mosaicA:#ff3cf0;
+  --mosaicB:#3fb7ff;
+  --mosaicC:#8fe3c2;
 }
 
 *{ box-sizing:border-box; }
@@ -79,6 +90,20 @@ html,body{
 .t-pb{color:var(--pb); text-shadow:0 0 8px var(--pb);}
 .t-gun{color:var(--gun);}
 .t-flash{color:var(--flash); text-shadow:0 0 10px #fff;}
+
+/* boss fights */
+.t-boss1{color:var(--boss1); text-shadow:0 0 8px var(--boss1);}
+.t-boss2{color:var(--boss2); text-shadow:0 0 9px var(--boss2);}
+.t-boss3{color:var(--boss3); text-shadow:0 0 10px var(--boss3);}
+.t-bossF{color:var(--bossF); text-shadow:0 0 14px var(--bossF);}
+.t-bossbar{color:var(--bossbar); text-shadow:0 0 8px var(--bossbar);}
+.t-bossbarEmpty{color:var(--bossbarEmpty);}
+.t-bossname{color:var(--bossname); text-shadow:0 0 8px var(--bossname); letter-spacing:1px;}
+.t-sword{color:var(--sword); text-shadow:0 0 8px var(--sword);}
+.t-swordFlash{color:#fff; text-shadow:0 0 12px var(--sword);}
+.t-mosaicA{color:var(--mosaicA); text-shadow:0 0 6px var(--mosaicA);}
+.t-mosaicB{color:var(--mosaicB); text-shadow:0 0 6px var(--mosaicB);}
+.t-mosaicC{color:var(--mosaicC); text-shadow:0 0 6px var(--mosaicC);}
 
 /* overlay */
 .overlay{
