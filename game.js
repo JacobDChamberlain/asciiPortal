@@ -65,8 +65,12 @@ const SWIM_UP    = 13 * SCALE;    // upward swim-stroke speed
 const WATER_DRAG = 2.6;           // velocity damping per second while submerged
 const SWIM_BUOY  = 0.82;          // fraction of gravity cancelled by buoyancy
 
-// tile helpers
-const isSolidTile = (t) => t === "#" || t === "X" || t === "^" || t === "_" || t === "D";
+// tile helpers. NOTE: the exit door 'D' is deliberately NOT solid — it never
+// blocks movement or portal shots. It's a passable marker whose only job is to
+// register a win once it's open (see the win check in step()). This keeps the
+// closed door from being an obstacle or blocking line-of-sight to the wall
+// behind it.
+const isSolidTile = (t) => t === "#" || t === "X" || t === "^" || t === "_";
 const isPortalable = (t) => t === "#";
 
 /* ------------------------------ 2. level state --------------------- */
@@ -269,8 +273,7 @@ function bodyHitsSolid(b, usePortalHoles) {
 
 function isSolidCell(x, y, usePortalHoles) {
   const t = tileAt(x, y);
-  if (t === "D") { if (state.doorOpen) return false; }
-  else if (!isSolidTile(t)) return false;
+  if (!isSolidTile(t)) return false;    // door 'D' falls through here → passable
   if (usePortalHoles && portalHoleAt(x, y)) return false;
   return true;
 }
@@ -399,7 +402,9 @@ function firePortal(which, ox, oy, dx, dy) {
     else               { t = tMaxY; cy += stepY; ny = -stepY; tMaxY += tDeltaY; }
     if (cx < 0 || cx >= state.W || cy < 0 || cy >= state.H) return false;
     const tile = tileAt(cx, cy);
-    if (tile === "X" || tile === "D") return false;          // blocked, no portal
+    if (tile === "X") return false;                          // metal blocks the shot
+    // 'D' (the exit door) is transparent to portals — the ray passes through it
+    // so you can place a portal on the concrete wall behind the door.
     if (isPortalable(tile))
       return placePortal(which, cx, cy, nx, ny, ox + dx * t, oy + dy * t);
   }
