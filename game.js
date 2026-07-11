@@ -60,6 +60,8 @@ const SWORD_DRAW  = 4 * SCALE;    // length of the drawn blade
 const BOSS_HIT_CD = 0.5;          // seconds a boss is immune after taking a hit
 const SWORD_CD    = 0.35;         // seconds between sword swings
 
+const NAME_MAX = 12;              // max length of the entered player name
+
 // swimmable ('w') water: buoyant, draggy, and you can stroke upward
 const SWIM_UP    = 13 * SCALE;    // upward swim-stroke speed
 const WATER_DRAG = 2.6;           // velocity damping per second while submerged
@@ -95,7 +97,7 @@ const state = {
   lastMoveDir: 1,
   fireFlash: 0,            // >0 briefly after firing
   fireWhich: 0,            // 0 = none, 1 = blue, 2 = orange
-  mode: "start",           // start | play | loading | reward | bossIntro | boss | finalBoss | won
+  mode: "start",           // start | name | play | loading | reward | bossIntro | boss | finalBoss | won
   overlayTimer: 0,
   deathFlash: 0,
   maxReached: 0,           // furthest chamber unlocked in the selector
@@ -108,13 +110,19 @@ const state = {
   introBoss: 0,            // boss to launch after the current bossIntro overlay
   swordFlash: 0,           // >0 briefly after a sword swing
   swordCd: 0,              // cooldown between swings
-  playerName: "",          // shown on the congrats screen (enter-name is TODO)
+  playerName: "",          // captured on the enter-name screen; shown on victory
 };
 
 // remember unlocked progress across reloads (falls back to session-only)
 try {
   const saved = parseInt(localStorage.getItem("asciiPortalMaxReached"), 10);
   if (saved > 0) state.maxReached = Math.min(saved, LEVELS.length - 1);
+} catch (e) { /* localStorage unavailable */ }
+
+// pre-fill the name field with a previously entered name, if any
+try {
+  const savedName = localStorage.getItem("asciiPortalPlayerName");
+  if (savedName) state.playerName = savedName.slice(0, NAME_MAX);
 } catch (e) { /* localStorage unavailable */ }
 
 const screenEl  = document.getElementById("screen");
@@ -524,7 +532,7 @@ function getThrowDirection() {
 
 function beginIfNeeded() {
   if (state.mode === "start") {
-    startGame();
+    showNameEntry();
   }
 }
 
@@ -533,6 +541,7 @@ window.addEventListener("keydown", (e) => {
   if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) e.preventDefault();
 
   if (state.mode === "start") { beginIfNeeded(); return; }
+  if (state.mode === "name") { handleNameKey(e); return; }
   const playing = state.mode === "play";
   const bossing = state.mode === "boss" || state.mode === "finalBoss";
   if (!playing && !bossing) return;
@@ -602,7 +611,7 @@ screenEl.addEventListener("contextmenu", (e) => e.preventDefault());
 screenEl.addEventListener("mousedown", (e) => {
   e.preventDefault();
   screenEl.focus();
-  if (state.mode === "start") { startGame(); return; }
+  if (state.mode === "start") { showNameEntry(); return; }
   if (state.mode !== "play" || !state.hasGun) return;
   updateMouseCell(e);
   // right-click OR shift-click = orange (trackpad friendly); plain click = blue
@@ -949,6 +958,51 @@ const TITLE = centerLines([
   "« click here or press any key to begin »",
   "",
 ]);
+
+// ---- enter-name screen (shown once, between the title and Chamber 1) ----
+// The captured name persists to localStorage and appears on the victory screen.
+function showNameEntry() {
+  state.mode = "name";
+  renderNameEntry();
+}
+
+// paint the name field into the overlay; called every frame for a blinking caret
+function renderNameEntry() {
+  const shown = state.playerName || "";
+  const caret = (Math.floor(state.frame / 30) % 2 === 0) ? "▏" : " ";
+  const pad = " ".repeat(Math.max(0, NAME_MAX - shown.length));
+  const field = "[ " + shown + caret + pad + " ]";
+  showOverlay(["", ""].concat(boxed([
+    "APERTURE SCIENCE — TEST SUBJECT REGISTRATION",
+    "",
+    "Enter your name:",
+    "",
+    field,
+    "",
+    "Type your name  ·  BACKSPACE erases  ·  " + NAME_MAX + " chars max",
+    "Press  ENTER  to begin your trials",
+  ], { tl: "╔", tr: "╗", bl: "╚", br: "╝", h: "═", v: "║" })).join("\n"));
+}
+
+// keystrokes while the name screen is up
+function handleNameKey(e) {
+  const k = e.key;
+  if (k === "Enter") { confirmName(); return; }
+  if (k === "Backspace") { state.playerName = state.playerName.slice(0, -1); renderNameEntry(); return; }
+  if (k === "Escape") { state.playerName = ""; renderNameEntry(); return; }
+  // accept letters, digits and spaces, up to the cap
+  if (k.length === 1 && /[A-Za-z0-9 ]/.test(k) && state.playerName.length < NAME_MAX) {
+    state.playerName += k;
+    renderNameEntry();
+  }
+}
+
+// lock in the name (may be empty → victory screen falls back to "AGENT") and start
+function confirmName() {
+  state.playerName = state.playerName.trim().slice(0, NAME_MAX);
+  try { localStorage.setItem("asciiPortalPlayerName", state.playerName); } catch (e) {}
+  startGame();
+}
 
 function startGame() {
   state.mode = "play";
@@ -1310,6 +1364,8 @@ function frame(now) {
   } else if (state.mode === "bossIntro") {
     state.overlayTimer -= dtReal;
     if (state.overlayTimer <= 0) beginBossFight();
+  } else if (state.mode === "name") {
+    renderNameEntry();   // repaint each frame for the blinking caret
   }
 
   if (state.fireFlash > 0) state.fireFlash -= dtReal;

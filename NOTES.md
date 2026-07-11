@@ -1,21 +1,17 @@
 # ASCII PORTAL — Deferred / TODO notes
 
-## Enter-name screen (NOT YET IMPLEMENTED — placeholder)
+## Enter-name screen (DONE)
 
-Add an "enter your name" prompt somewhere in **Chamber 01** (the first level).
-Decide the exact trigger later — likely candidates:
+Implemented in `game.js`. A one-time registration screen appears between the
+title and Chamber 01: the title's "press any key / click" now calls
+`showNameEntry()` (mode `"name"`) instead of jumping straight into the game.
 
-- On first entering Chamber 01, before the player can move, or
-- A one-time modal on the very first `startGame()`.
-
-Requirements when built:
-
-- Capture a short player name (cap length, e.g. 12 chars; sanitize before
-  rendering since output is injected as innerHTML — reuse `esc()` in game.js).
-- Persist it (localStorage key, e.g. `asciiPortalPlayerName`, alongside the
-  existing `asciiPortalMaxReached`) so it survives reloads.
-- Store it on `state` (e.g. `state.playerName`).
-- **Display it on the final congratulations screen** after the final boss
-  (e.g. "CONGRATULATIONS, <NAME>!").
-
-For now this is only a note — do not build the input flow yet.
+- `handleNameKey()` captures letters/digits/spaces, `Backspace` erases,
+  `Escape` clears, `Enter` (`confirmName()`) locks it in and starts Chamber 01.
+- Capped at `NAME_MAX` (12 chars).
+- Persisted to localStorage key `asciiPortalPlayerName` and restored at boot to
+  pre-fill the field; stored on `state.playerName`.
+- Rendering goes through `boxed()` + `showOverlay()` (which uses `textContent`,
+  so no HTML-injection risk); the field repaints each frame for a blinking caret.
+- Shown on the victory screen in `winGame()` ("CONGRATULATIONS, <NAME>!"),
+  falling back to "AGENT" when left blank.
